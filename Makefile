@@ -1,9 +1,13 @@
 GO ?= go
 
-.PHONY: build test test-race fuzz clean
+.PHONY: build install test test-race fuzz clean
 
 build:
 	$(GO) build -o goet ./cmd/goet
+
+install: build
+	mkdir -p ~/.local/bin
+	ln -sf $(CURDIR)/goet ~/.local/bin/goet
 
 test:
 	$(GO) test ./...

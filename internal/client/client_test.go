@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iantay/goet/internal/auth"
-	"github.com/iantay/goet/internal/protocol"
-	"github.com/iantay/goet/internal/session"
-	"github.com/iantay/goet/internal/transport"
+	"github.com/chronologos/goet/internal/auth"
+	"github.com/chronologos/goet/internal/protocol"
+	"github.com/chronologos/goet/internal/session"
+	"github.com/chronologos/goet/internal/transport"
 )
 
 // startTestSession creates a real session on a random port.
@@ -75,7 +75,7 @@ func startTestClient(t *testing.T, port int, passkey []byte) (
 		Passkey: passkey,
 	}
 
-	c := newTestClient(cfg, stdinR, stdoutW)
+	c := newTestClient(cfg, stdinR, stdoutW, io.Discard)
 	ctx, cancelFn := context.WithCancel(context.Background())
 
 	ch := make(chan error, 1)
@@ -174,11 +174,8 @@ func TestClientBasicIO(t *testing.T) {
 		t.Fatalf("write stdin: %v", err)
 	}
 
-	// Read output until marker appears
-	output := readUntilFromPipe(t, stdoutR, marker, 5*time.Second)
-	if !strings.Contains(output, marker) {
-		t.Fatalf("marker not found in output: %q", output)
-	}
+	// Read output until marker appears (readUntilFromPipe fatals on timeout)
+	readUntilFromPipe(t, stdoutR, marker, 5*time.Second)
 
 	// Clean exit
 	cancel()
@@ -230,20 +227,14 @@ func TestClientReconnect(t *testing.T) {
 	defer stdoutR2.Close()
 
 	// The catchup replay should contain marker1 (session replays its buffer)
-	output := readUntilFromPipe(t, stdoutR2, marker1, 5*time.Second)
-	if !strings.Contains(output, marker1) {
-		t.Fatalf("catchup replay missing marker: %q", output)
-	}
+	readUntilFromPipe(t, stdoutR2, marker1, 5*time.Second)
 
 	// Verify we can still send new commands
 	marker2 := "RECONNECT_MARKER_SECOND"
 	if _, err := stdinW2.Write([]byte("echo " + marker2 + "\n")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	output = readUntilFromPipe(t, stdoutR2, marker2, 5*time.Second)
-	if !strings.Contains(output, marker2) {
-		t.Fatalf("second marker not found: %q", output)
-	}
+	readUntilFromPipe(t, stdoutR2, marker2, 5*time.Second)
 
 	cancel2()
 	select {
@@ -307,5 +298,86 @@ func TestClientSessionShutdown(t *testing.T) {
 		// success — either nil or connection closed error
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for client to exit after session shutdown")
+	}
+}
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		input uint64
+		want  string
+	}{
+		{0, "0B"},
+		{512, "512B"},
+		{1024, "1.0KB"},
+		{1536, "1.5KB"},
+		{1048576, "1.0MB"},
+		{1073741824, "1.0GB"},
+	}
+	for _, tt := range tests {
+		got := formatBytes(tt.input)
+		if got != tt.want {
+			t.Errorf("formatBytes(%d) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestProfileOutput(t *testing.T) {
+	port, passkey, sessionCleanup := startTestSession(t)
+	defer sessionCleanup()
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+
+	var stderrBuf bytes.Buffer
+	cfg := Config{
+		Host:    "127.0.0.1",
+		Port:    port,
+		Passkey: passkey,
+		Profile: true,
+	}
+	c := newTestClient(cfg, stdinR, stdoutW, &stderrBuf)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := c.Run(ctx)
+		stdoutW.Close()
+		errCh <- err
+	}()
+
+	// Drain stdout to prevent pipe backpressure
+	go io.Copy(io.Discard, stdoutR)
+	defer stdoutR.Close()
+
+	// Wait long enough for at least one heartbeat tick (5s) to fire
+	time.Sleep(6 * time.Second)
+
+	// Trigger exit — ~. from initial AfterNewline state
+	stdinW.Write([]byte("~."))
+	stdinW.Close()
+
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for client exit")
+	}
+
+	output := stderrBuf.String()
+
+	// Periodic profile line should have appeared
+	if !strings.Contains(output, "[profile] rtt=") {
+		t.Errorf("missing periodic profile line in stderr:\n%s", output)
+	}
+
+	// Summary should appear on exit
+	if !strings.Contains(output, "[profile] === Connection Profile ===") {
+		t.Errorf("missing profile summary in stderr:\n%s", output)
+	}
+	if !strings.Contains(output, "[profile] Duration:") {
+		t.Errorf("missing duration line in stderr:\n%s", output)
+	}
+	if !strings.Contains(output, "[profile] Traffic:") {
+		t.Errorf("missing traffic line in stderr:\n%s", output)
 	}
 }

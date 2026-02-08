@@ -9,8 +9,8 @@ import (
 
 	"github.com/quic-go/quic-go"
 
-	"github.com/iantay/goet/internal/auth"
-	"github.com/iantay/goet/internal/protocol"
+	"github.com/chronologos/goet/internal/auth"
+	"github.com/chronologos/goet/internal/protocol"
 )
 
 // Listener wraps a QUIC listener for the session side.
@@ -42,7 +42,8 @@ func ListenWithCert(port int, passkey []byte, cert tls.Certificate) (*Listener, 
 	tr := &quic.Transport{Conn: udpConn}
 	tlsConf := ServerTLSConfig(cert)
 	quicConf := &quic.Config{
-		MaxIdleTimeout: 30 * time.Second,
+		MaxIdleTimeout:    30 * time.Second,
+		InitialPacketSize: 1200, // Tailscale MTU is 1280; default 1350 gets dropped
 	}
 
 	ln, err := tr.Listen(tlsConf, quicConf)

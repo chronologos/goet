@@ -1,6 +1,9 @@
 package client
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEscapeProcessor(t *testing.T) {
 	tests := []struct {
@@ -155,4 +158,68 @@ func TestEscapeProcessorDoubleTildeFollowedByDot(t *testing.T) {
 	if string(dst[:n]) != "~." {
 		t.Fatalf("output = %q, want %q", string(dst[:n]), "~.")
 	}
+}
+
+// --- Fuzz tests ---
+
+// FuzzEscapeProcess feeds arbitrary bytes through the escape state machine.
+// Detects panics (e.g. out-of-bounds writes to dst).
+func FuzzEscapeProcess(f *testing.F) {
+	f.Add([]byte("hello\n~."))
+	f.Add([]byte("\r~~\n~x"))
+	f.Add([]byte(""))
+	f.Add([]byte("~"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		e := NewEscapeProcessor()
+		dst := make([]byte, len(data)+2) // +2 for held ~ expansion
+		e.Process(data, dst)
+	})
+}
+
+// FuzzEscapeProcessMultiCall splits fuzzed input at an arbitrary point and
+// feeds it across two Process calls, exercising state carry-over between calls.
+func FuzzEscapeProcessMultiCall(f *testing.F) {
+	f.Add([]byte("hello\n~."), 5)
+	f.Add([]byte("\n~"), 1)
+	f.Fuzz(func(t *testing.T, data []byte, split int) {
+		if len(data) == 0 {
+			return
+		}
+		// Clamp split to valid range
+		if split < 0 {
+			split = 0
+		}
+		if split > len(data) {
+			split = len(data)
+		}
+
+		e := NewEscapeProcessor()
+		dst := make([]byte, len(data)+2)
+
+		part1, part2 := data[:split], data[split:]
+		e.Process(part1, dst)
+		e.Process(part2, dst)
+	})
+}
+
+// FuzzParseDestination feeds arbitrary strings into parseDestination.
+func FuzzParseDestination(f *testing.F) {
+	f.Add("user@host")
+	f.Add("host")
+	f.Add("@host")
+	f.Add("user@")
+	f.Add("")
+	f.Add("user@host@extra")
+	f.Fuzz(func(t *testing.T, dest string) {
+		user, host := parseDestination(dest)
+		// Invariant: if no @ present, user is empty and host == dest
+		if !strings.Contains(dest, "@") {
+			if user != "" {
+				t.Errorf("user should be empty without @, got %q", user)
+			}
+			if host != dest {
+				t.Errorf("host should equal dest without @, got %q", host)
+			}
+		}
+	})
 }

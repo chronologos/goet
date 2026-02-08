@@ -8,9 +8,9 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/iantay/goet/internal/catchup"
-	"github.com/iantay/goet/internal/protocol"
-	"github.com/iantay/goet/internal/transport"
+	"github.com/chronologos/goet/internal/catchup"
+	"github.com/chronologos/goet/internal/protocol"
+	"github.com/chronologos/goet/internal/transport"
 )
 
 const (
@@ -331,10 +331,4 @@ func (s *Session) closeConn() {
 		s.conn.Close()
 		s.conn = nil
 	}
-}
-
-// Dial creates a test client connection to this session.
-// Exported for use in integration tests only.
-func Dial(ctx context.Context, port int, passkey []byte) (*transport.Conn, error) {
-	return transport.Dial(ctx, "127.0.0.1", port, passkey, 0)
 }

@@ -12,9 +12,9 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/iantay/goet/internal/catchup"
-	"github.com/iantay/goet/internal/protocol"
-	"github.com/iantay/goet/internal/transport"
+	"github.com/chronologos/goet/internal/catchup"
+	"github.com/chronologos/goet/internal/protocol"
+	"github.com/chronologos/goet/internal/transport"
 )
 
 const (
@@ -29,20 +29,23 @@ type Config struct {
 	Host    string
 	Port    int
 	Passkey []byte
+	Profile bool // emit RTT/traffic stats to stderr
 }
 
 // Client is the terminal-facing half of a reconnectable terminal session.
 // It connects to a session via QUIC, relays stdin/stdout, handles the ~.
 // escape sequence, and reconnects with catchup replay on network failures.
 type Client struct {
-	cfg     Config
-	buf     *catchup.Buffer
-	escape  *EscapeProcessor
-	sendSeq uint64
-	recvSeq uint64
-	stdin   io.Reader
-	stdout  io.Writer
-	stdinFd int // for MakeRaw/Restore; -1 if pipe (skip raw mode)
+	cfg          Config
+	buf          *catchup.Buffer
+	escape       *EscapeProcessor
+	sendSeq      uint64
+	recvSeq      uint64
+	stdin        io.Reader
+	stdout       io.Writer
+	stderr       io.Writer          // for --profile output (os.Stderr or test buffer)
+	stdinFd      int                // for MakeRaw/Restore; -1 if pipe (skip raw mode)
+	profileStart time.Time          // set on first successful dial
 }
 
 // New creates a client with the given config. Uses os.Stdin/os.Stdout
@@ -59,19 +62,21 @@ func New(cfg Config) *Client {
 		escape:  NewEscapeProcessor(),
 		stdin:   os.Stdin,
 		stdout:  os.Stdout,
+		stderr:  os.Stderr,
 		stdinFd: fd,
 	}
 }
 
 // newTestClient creates a client wired to pipes instead of the real terminal.
 // stdinFd is set to -1 to skip MakeRaw (pipes aren't terminals).
-func newTestClient(cfg Config, stdin io.Reader, stdout io.Writer) *Client {
+func newTestClient(cfg Config, stdin io.Reader, stdout, stderr io.Writer) *Client {
 	return &Client{
 		cfg:     cfg,
 		buf:     catchup.New(0),
 		escape:  NewEscapeProcessor(),
 		stdin:   stdin,
 		stdout:  stdout,
+		stderr:  stderr,
 		stdinFd: -1,
 	}
 }
@@ -110,6 +115,10 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 		}
 
+		if c.profileStart.IsZero() {
+			c.profileStart = time.Now()
+		}
+
 		if err := c.handleSequenceExchange(conn); err != nil {
 			log.Printf("client: sequence exchange failed: %v, retrying", err)
 			conn.Close()
@@ -145,29 +154,26 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		switch reason {
-		case exitEscape:
-			conn.WriteControl(&protocol.Shutdown{}) // best-effort
-			conn.Close()
-			return nil
-		case exitShutdown:
-			conn.Close()
-			return nil
-		case exitStdinEOF:
-			conn.WriteControl(&protocol.Shutdown{}) // best-effort
-			conn.Close()
-			return nil
-		case exitCancelled:
-			conn.WriteControl(&protocol.Shutdown{}) // best-effort
-			conn.Close()
-			return ctx.Err()
 		case exitNetwork:
 			conn.Close()
 			log.Printf("client: connection lost, reconnecting in %v", reconnectDelay)
 			select {
 			case <-time.After(reconnectDelay):
+				continue
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		case exitShutdown:
+			conn.Close()
+			return nil
+		default:
+			// exitEscape, exitStdinEOF, exitCancelled: tell session we're leaving
+			conn.WriteControl(&protocol.Shutdown{}) // best-effort
+			conn.Close()
+			if reason == exitCancelled {
+				return ctx.Err()
+			}
+			return nil
 		}
 	}
 }
@@ -224,6 +230,10 @@ func (c *Client) sendResize(conn *transport.Conn) {
 // ioLoop is the per-connection event loop. It blocks until the connection
 // fails, the user types ~., the session shuts down, or the context is done.
 func (c *Client) ioLoop(ctx context.Context, conn *transport.Conn, stdinCh <-chan []byte) exitReason {
+	if c.cfg.Profile {
+		defer c.logProfileSummary(conn)
+	}
+
 	controlCh := make(chan streamResult, 4)
 	dataCh := make(chan streamResult, 4)
 
@@ -273,7 +283,7 @@ func (c *Client) ioLoop(ctx context.Context, conn *transport.Conn, stdinCh <-cha
 			lastRecv = time.Now()
 			switch res.msg.(type) {
 			case *protocol.Heartbeat:
-				// noted
+				// Noted — no action needed
 			case *protocol.Shutdown:
 				return exitShutdown
 			case *protocol.SequenceHeader:
@@ -307,6 +317,9 @@ func (c *Client) ioLoop(ctx context.Context, conn *transport.Conn, stdinCh <-cha
 			if time.Since(lastRecv) > recvTimeout {
 				log.Printf("client: heartbeat timeout (%v since last recv)", time.Since(lastRecv))
 				return exitNetwork
+			}
+			if c.cfg.Profile {
+				c.logProfile(conn)
 			}
 
 		case <-ctx.Done():

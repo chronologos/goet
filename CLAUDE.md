@@ -13,7 +13,37 @@ Not in PATH by default — use full path or add to shell config.
 ```bash
 /usr/local/go/bin/go test ./...            # unit tests
 /usr/local/go/bin/go test -race ./...      # race detector
+./tests/integration_test.sh                # client↔session E2E (builds binary, uses FIFOs)
+./tests/e2e_ssh_test.sh                    # SSH E2E (requires SSH key auth to localhost)
+
+# Fuzz tests (use ^ and $ for exact match when names share prefix)
 /usr/local/go/bin/go test -fuzz=FuzzReadMessage -fuzztime=30s ./internal/protocol/
+/usr/local/go/bin/go test -fuzz='^FuzzEscapeProcess$' -fuzztime=30s ./internal/client/
+/usr/local/go/bin/go test -fuzz='^FuzzEscapeProcessMultiCall$' -fuzztime=30s ./internal/client/
+/usr/local/go/bin/go test -fuzz='^FuzzParseDestination$' -fuzztime=30s ./internal/client/
+/usr/local/go/bin/go test -fuzz='^FuzzBufferStoreReplay$' -fuzztime=30s ./internal/catchup/
+/usr/local/go/bin/go test -fuzz='^FuzzBufferEviction$' -fuzztime=30s ./internal/catchup/
+```
+
+## Local Development Testing
+
+```bash
+# SSH mode (easiest — single command)
+./goet user@host
+# ~. to disconnect
+
+# With RTT profiling (stats to stderr every 5s + summary on exit)
+./goet --profile user@host
+
+# Direct mode (manual credentials, for protocol debugging)
+PASSKEY=$(head -c32 /dev/urandom | xxd -p -c64)
+
+# Terminal 1: Session (passkey via stdin, prints port to stdout)
+echo "$PASSKEY" | ./goet session -f test -p 0
+
+# Terminal 2: Client (passkey via -k flag)
+./goet --local -p <PORT> -k "$PASSKEY" 127.0.0.1
+# ~. to disconnect
 ```
 
 ## Architecture
@@ -22,7 +52,9 @@ Not in PATH by default — use full path or add to shell config.
 - **Two-process model**: client + session (no broker)
 - **Two QUIC streams**: control (stream 0) + data (stream 1)
 - **HMAC-SHA256 auth** bound to TLS exporter material
-- **64MB ring buffer** for reconnect catchup
+- **64MB ring buffer** for reconnect catchup (both sides)
+- **`~.` escape** detection via 3-state machine in client
+- **SSH bootstrapping**: `goet user@host` spawns SSH to launch remote session, then QUIC for data
 
 ## Protocol
 
@@ -35,7 +67,7 @@ Max payload 4MB. See `internal/protocol/constants.go` for message types.
 - No allocations in hot paths where avoidable
 - `internal/` for all non-cmd packages
 - Tests colocated with source (`_test.go`)
-- Fuzz tests for all decoders
+- Fuzz tests for decoders, escape processor, parseDestination, catchup buffer
 
 ## Dependencies
 

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iantay/goet/internal/auth"
-	"github.com/iantay/goet/internal/protocol"
+	"github.com/chronologos/goet/internal/auth"
+	"github.com/chronologos/goet/internal/protocol"
 )
 
 // setupConnPair creates a Listener and dials into it, returning both sides.

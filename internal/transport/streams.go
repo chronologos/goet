@@ -3,7 +3,7 @@ package transport
 import (
 	"github.com/quic-go/quic-go"
 
-	"github.com/iantay/goet/internal/protocol"
+	"github.com/chronologos/goet/internal/protocol"
 )
 
 // Conn wraps a QUIC connection with its control and data streams.

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iantay/goet/internal/auth"
-	"github.com/iantay/goet/internal/protocol"
-	"github.com/iantay/goet/internal/transport"
+	"github.com/chronologos/goet/internal/auth"
+	"github.com/chronologos/goet/internal/protocol"
+	"github.com/chronologos/goet/internal/transport"
 )
 
 // startTestSession creates a session with a random port and returns a function

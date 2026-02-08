@@ -16,32 +16,36 @@
 - [x] Loopback integration test: connect, auth, bidirectional exchange
 - [x] Auth rejection test with wrong passkey
 
-## Phase 3: Session (Direct Mode)
-- [ ] PTY spawn with creack/pty
-- [ ] PTY resize + SIGWINCH bounce (shrink-by-1 trick)
-- [ ] Session goroutine orchestrator + select loop
-- [ ] Accept + authenticate QUIC connections
-- [ ] Reconnect: swap streams, sequence exchange, catchup replay
-- [ ] Daemonize via re-exec pattern
-- [ ] CLI: `goet-session -f <session-id> -p <port>`
+## Phase 3: Session (Direct Mode) ✅
+- [x] PTY spawn with creack/pty
+- [x] PTY resize + SIGWINCH bounce (shrink-by-1 trick)
+- [x] Session goroutine orchestrator + select loop
+- [x] Accept + authenticate QUIC connections
+- [x] Reconnect: swap streams, sequence exchange, catchup replay
+- [x] CLI: `goet session -f <session-id> -p <port>`
 
-## Phase 4: Client (Direct Mode)
-- [ ] Terminal raw mode via x/term
-- [ ] SIGWINCH handler
-- [ ] `~.` escape detection state machine
-- [ ] Client goroutine orchestrator + select loop
-- [ ] QUIC connect + reconnect loop
-- [ ] CLI: `goet --local -p <port> -k <key> -s <session> <host>`
-- [ ] Integration tests: connect, reconnect, escape, wrong passkey
+## Phase 4: Client (Direct Mode) ✅
+- [x] Terminal raw mode via x/term (auto-detects pipes vs terminals)
+- [x] SIGWINCH handler
+- [x] `~.` escape detection state machine
+- [x] Client goroutine orchestrator + select loop
+- [x] QUIC connect + reconnect loop with 1s constant delay
+- [x] Client-side catchup buffer for resend on reconnect
+- [x] CLI: `goet --local -p <port> -k <passkey-hex> [host]`
+- [x] Integration tests: connect, reconnect, escape, session shutdown
+- [x] Shell integration test: `tests/integration_test.sh`
+- [x] `-race` clean under `go test -race ./...`
 
-## Phase 5: SSH Integration
-- [ ] Spawn SSH, pass passkey via stdin, read port from stdout
-- [ ] CLI: `goet user@host`
-- [ ] E2E test: full SSH flow
+## Phase 5: SSH Integration ✅
+- [x] Spawn SSH, pass passkey via stdin, read port from stdout
+- [x] Hostname resolution in transport.Dial (was IP-only)
+- [x] CLI: `goet [user@]host`
+- [x] E2E test: `tests/e2e_ssh_test.sh`
+- [x] Fuzz tests: escape processor (single + multi-call), parseDestination, catchup buffer (store/replay + eviction)
 
 ## Phase 6: Polish
+- [x] `--profile` flag for RTT measurement (QUIC-level stats via ConnectionStats)
 - [ ] Write coalescing (2ms timer)
-- [ ] `--profile` flag for RTT measurement
-- [ ] `-race` clean under `go test -race ./...`
+- [x] `-race` clean under `go test -race ./...`
 - [ ] Signal handling edge cases
 - [ ] PTY cleanup on crash

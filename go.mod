@@ -1,4 +1,4 @@
-module github.com/iantay/goet
+module github.com/chronologos/goet
 
 go 1.25.7
 

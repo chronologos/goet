@@ -223,3 +223,72 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Fatal("expected some entries after concurrent writes")
 	}
 }
+
+// --- Fuzz tests ---
+
+// FuzzBufferStoreReplay exercises Store/ReplaySince with arbitrary data,
+// checking invariants: size never exceeds max, count never exceeds capacity,
+// replay results are ordered.
+func FuzzBufferStoreReplay(f *testing.F) {
+	f.Add(uint64(1), []byte("hello"), uint64(0))
+	f.Add(uint64(100), []byte(""), uint64(50))
+	f.Fuzz(func(t *testing.T, seq uint64, payload []byte, replayAfter uint64) {
+		buf := New(256)
+
+		// Store several entries to exercise the ring
+		buf.Store(seq, payload)
+		if seq > 0 {
+			buf.Store(seq+1, payload)
+		}
+
+		// Size can exceed maxSize when a single payload is larger than maxSize
+		// (soft eviction — documented behavior). But with multiple entries,
+		// eviction should keep total close to maxSize.
+		if buf.Count() > 1 && buf.Size() > 256+len(payload) {
+			t.Fatalf("size %d too large with %d entries", buf.Size(), buf.Count())
+		}
+		if buf.Count() > buf.capacity {
+			t.Fatalf("count %d exceeds capacity %d", buf.Count(), buf.capacity)
+		}
+
+		entries := buf.ReplaySince(replayAfter)
+		for i := 1; i < len(entries); i++ {
+			if entries[i].Seq <= entries[i-1].Seq {
+				t.Fatalf("replay not ordered: seq %d after %d", entries[i].Seq, entries[i-1].Seq)
+			}
+		}
+	})
+}
+
+// FuzzBufferEviction fills the buffer beyond capacity with fuzzed payloads,
+// checking that invariants hold after eviction.
+func FuzzBufferEviction(f *testing.F) {
+	f.Add(10, []byte("payload"))
+	f.Fuzz(func(t *testing.T, n int, payload []byte) {
+		if n < 0 {
+			n = -n
+		}
+		n = n%500 + 1 // 1..500 entries
+
+		buf := New(128)
+		for i := uint64(1); i <= uint64(n); i++ {
+			buf.Store(i, payload)
+		}
+
+		if buf.Size() < 0 {
+			t.Fatalf("negative size %d", buf.Size())
+		}
+		if buf.Count() < 0 || buf.Count() > buf.capacity {
+			t.Fatalf("count %d out of range [0, %d]", buf.Count(), buf.capacity)
+		}
+
+		if buf.Count() > 0 {
+			if buf.NewestSeq() != uint64(n) {
+				t.Fatalf("newest seq = %d, want %d", buf.NewestSeq(), n)
+			}
+			if buf.OldestSeq() == 0 {
+				t.Fatalf("oldest seq is 0 with count %d", buf.Count())
+			}
+		}
+	})
+}
