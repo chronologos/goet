@@ -199,8 +199,11 @@ func TestClientReconnect(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 
-	// Read initial seq header
+	// Complete handshake: read seq header + send TerminalInfo
 	conn1.ReadControl()
+	if err := conn1.WriteControl(&protocol.TerminalInfo{Term: "xterm-256color"}); err != nil {
+		t.Fatalf("write terminal info: %v", err)
+	}
 
 	// Generate output
 	marker1 := "RECONNECT_MARKER_FIRST"

@@ -153,12 +153,31 @@ func TestDataEmptyPayload(t *testing.T) {
 	}
 }
 
+func TestTerminalInfoRoundTrip(t *testing.T) {
+	for _, term := range []string{"", "xterm-256color", "alacritty"} {
+		original := &TerminalInfo{Term: term}
+		var buf bytes.Buffer
+		if err := WriteMessage(&buf, original); err != nil {
+			t.Fatal(err)
+		}
+		msg, err := ReadMessage(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := msg.(*TerminalInfo)
+		if decoded.Term != original.Term {
+			t.Fatalf("term mismatch: got %q, want %q", decoded.Term, original.Term)
+		}
+	}
+}
+
 func TestMultipleMessagesInSequence(t *testing.T) {
 	var buf bytes.Buffer
 
 	msgs := []any{
 		&Heartbeat{TimestampMs: 1000},
 		&Resize{Rows: 50, Cols: 120},
+		&TerminalInfo{Term: "alacritty"},
 		&Data{Seq: 1, Payload: []byte("first")},
 		&Data{Seq: 2, Payload: []byte("second")},
 		&Shutdown{},
@@ -185,6 +204,11 @@ func TestMultipleMessagesInSequence(t *testing.T) {
 			d := msg.(*Resize)
 			if d.Rows != e.Rows || d.Cols != e.Cols {
 				t.Fatalf("message %d: resize mismatch", i)
+			}
+		case *TerminalInfo:
+			d := msg.(*TerminalInfo)
+			if d.Term != e.Term {
+				t.Fatalf("message %d: terminal info mismatch", i)
 			}
 		case *Data:
 			d := msg.(*Data)
@@ -260,11 +284,25 @@ func FuzzDecodeSequenceHeader(f *testing.F) {
 	})
 }
 
+func FuzzDecodeTerminalInfo(f *testing.F) {
+	f.Add([]byte{0, 0})                                        // empty term
+	f.Add([]byte{0, 5, 'x', 't', 'e', 'r', 'm'})              // "xterm"
+	f.Add([]byte{0, 16, 'x', 't', 'e', 'r', 'm', '-', '2', '5', '6', 'c', 'o', 'l', 'o', 'r', 0, 0}) // with trailing garbage
+	f.Fuzz(func(t *testing.T, data []byte) {
+		DecodePayload(MsgTerminalInfo, data)
+	})
+}
+
 func FuzzReadMessage(f *testing.F) {
-	// Seed with a valid encoded message
+	// Seed with valid encoded messages of different types
 	var buf bytes.Buffer
 	WriteMessage(&buf, &Heartbeat{TimestampMs: 12345})
 	f.Add(buf.Bytes())
+
+	buf.Reset()
+	WriteMessage(&buf, &TerminalInfo{Term: "xterm-256color"})
+	f.Add(buf.Bytes())
+
 	f.Fuzz(func(t *testing.T, data []byte) {
 		ReadMessage(bytes.NewReader(data))
 	})

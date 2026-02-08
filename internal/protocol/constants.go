@@ -20,6 +20,7 @@ const (
 	MsgHeartbeat    MessageType = 0x10
 	MsgResize       MessageType = 0x11
 	MsgShutdown     MessageType = 0x12
+	MsgTerminalInfo MessageType = 0x13
 
 	// Data stream (stream 1)
 	MsgData MessageType = 0x20

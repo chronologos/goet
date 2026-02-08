@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/chronologos/goet/internal/catchup"
@@ -17,6 +18,7 @@ import (
 const (
 	ptyReadBufSize    = 32 * 1024 // 32 KB per PTY read
 	heartbeatInterval = 5 * time.Second
+	shellExitGrace    = 2 * time.Second // wait for shell after SIGHUP before SIGKILL
 )
 
 // Config holds session configuration.
@@ -37,8 +39,9 @@ type streamEvent struct {
 }
 
 // Session is the server-side half of a reconnectable terminal.
-// It spawns a PTY, accepts QUIC connections, relays terminal I/O,
-// and handles reconnection with catchup replay.
+// It accepts QUIC connections, spawns a PTY on the first client's
+// TerminalInfo, relays terminal I/O, and handles reconnection with
+// catchup replay.
 type Session struct {
 	cfg     Config
 	ptmx    *os.File
@@ -49,6 +52,11 @@ type Session struct {
 	conn    *transport.Conn // current connection (nil when disconnected)
 	sendSeq uint64          // next outbound data sequence
 	recvSeq uint64          // last received data sequence from client
+
+	// PTY lifecycle — nil until first client connects with TerminalInfo.
+	ptyDataCh chan []byte    // closed when PTY read goroutine exits
+	shellDone chan struct{}  // closed when shell exits
+	shellErr  error         // set before shellDone is closed
 
 	// Ready is closed after the listener is bound, with Port set.
 	// Callers (tests, CLI) can wait on this before dialing.
@@ -65,37 +73,21 @@ func New(cfg Config) *Session {
 	}
 }
 
-// Run is the session's main loop. It spawns the PTY, starts the QUIC listener,
-// and runs until the shell exits, the context is cancelled, or a client sends
-// Shutdown.
+// Run is the session's main loop. It starts the QUIC listener, defers PTY
+// spawn until the first client connects with TerminalInfo, and runs until
+// the shell exits, the context is cancelled, or a client sends Shutdown.
 func (s *Session) Run(ctx context.Context) error {
-	// Spawn PTY with shell
-	ptmx, cmd, err := spawnPTY(s.cfg.SessionID)
-	if err != nil {
-		return fmt.Errorf("spawn PTY: %w", err)
-	}
-	s.ptmx = ptmx
-	s.cmd = cmd
-
 	// Start QUIC listener
 	ln, err := transport.Listen(s.cfg.Port, s.cfg.Passkey)
 	if err != nil {
-		s.ptmx.Close()
-		s.cmd.Process.Kill()
 		return fmt.Errorf("listen: %w", err)
 	}
 	s.ln = ln
 
-	// Single defer for cleanup — order matters: close QUIC conn first
-	// (sends CONNECTION_CLOSE to client), then close listener transport,
-	// then PTY and shell.
 	defer func() {
 		s.closeConn()
 		s.ln.Close()
-		s.ptmx.Close()
-		if s.cmd.Process != nil {
-			s.cmd.Process.Kill()
-		}
+		s.cleanupShell()
 	}()
 
 	// Signal readiness — set port and close channel so waiters unblock.
@@ -107,18 +99,15 @@ func (s *Session) Run(ctx context.Context) error {
 	s.coal = coalesce.New()
 	defer s.coal.Stop()
 
-	// --- Permanent goroutines ---
+	// --- Event loop ---
+	// PTY channels start nil — their select cases are inactive until
+	// the first client connects and sends TerminalInfo.
 
-	ptyDataCh := make(chan []byte, 4)
-	go s.readPTY(ptyDataCh)
-
-	shellDoneCh := make(chan error, 1)
-	go s.waitShell(shellDoneCh)
+	var ptyDataCh <-chan []byte   // nil until PTY spawned
+	var shellDone <-chan struct{} // nil until PTY spawned
 
 	acceptCh := make(chan acceptResult, 1)
 	go s.acceptLoop(ctx, acceptCh)
-
-	// --- Event loop ---
 
 	streamCh := make(chan streamEvent, 8)
 	heartbeat := time.NewTicker(heartbeatInterval)
@@ -147,14 +136,19 @@ func (s *Session) Run(ctx context.Context) error {
 
 		case res := <-acceptCh:
 			if res.err != nil {
-				// Accept errors are often transient (bad auth, etc.)
-				// Log and continue accepting.
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
 				log.Printf("session: accept error: %v", res.err)
 			} else {
-				s.handleNewConn(res.conn, streamCh)
+				if err := s.handleNewConn(res.conn, streamCh); err != nil {
+					return fmt.Errorf("handle new conn: %w", err)
+				}
+				// After handleNewConn, PTY channels may have been created.
+				if s.ptyDataCh != nil && ptyDataCh == nil {
+					ptyDataCh = s.ptyDataCh
+					shellDone = s.shellDone
+				}
 			}
 			// Re-arm accept loop
 			go s.acceptLoop(ctx, acceptCh)
@@ -169,7 +163,7 @@ func (s *Session) Run(ctx context.Context) error {
 				}
 			}
 
-		case err := <-shellDoneCh:
+		case <-shellDone:
 			// Shell exited — flush coalesced data, notify client, and return.
 			// Short delay gives QUIC time to flush the Shutdown frame
 			// before the deferred conn.Close sends CONNECTION_CLOSE.
@@ -178,13 +172,18 @@ func (s *Session) Run(ctx context.Context) error {
 				s.conn.WriteControl(&protocol.Shutdown{})
 				time.Sleep(50 * time.Millisecond)
 			}
-			if err != nil {
-				return fmt.Errorf("shell exited: %w", err)
+			if s.shellErr != nil {
+				return fmt.Errorf("shell exited: %w", s.shellErr)
 			}
 			return nil
 
 		case <-ctx.Done():
+			// Graceful shutdown: notify client before tearing down.
 			s.flushCoalesced()
+			if s.conn != nil {
+				s.conn.WriteControl(&protocol.Shutdown{})
+				time.Sleep(50 * time.Millisecond)
+			}
 			return ctx.Err()
 		}
 	}
@@ -208,9 +207,33 @@ func (s *Session) readPTY(ch chan<- []byte) {
 	}
 }
 
-// waitShell waits for the shell process to exit.
-func (s *Session) waitShell(ch chan<- error) {
-	ch <- s.cmd.Wait()
+// waitShell waits for the shell process to exit and signals via shellDone.
+func (s *Session) waitShell() {
+	s.shellErr = s.cmd.Wait()
+	close(s.shellDone)
+}
+
+// cleanupShell gracefully shuts down the PTY and shell process.
+// Closing ptmx sends SIGHUP to the shell's process group, giving it a
+// chance to save history and run EXIT traps. Falls back to SIGKILL after
+// shellExitGrace if the shell hasn't exited.
+func (s *Session) cleanupShell() {
+	if s.ptmx == nil {
+		return
+	}
+	s.ptmx.Close()
+
+	// Wait for shell to exit gracefully (SIGHUP from ptmx.Close).
+	select {
+	case <-s.shellDone:
+		return
+	case <-time.After(shellExitGrace):
+	}
+
+	// Shell didn't exit in time — force kill.
+	if s.cmd.Process != nil {
+		s.cmd.Process.Signal(syscall.SIGKILL)
+	}
 }
 
 // acceptResult carries the result of a single Accept call.
@@ -264,13 +287,17 @@ func (s *Session) handleStreamEvent(ev streamEvent) error {
 
 	switch msg := ev.msg.(type) {
 	case *protocol.Resize:
-		if err := resizePTY(s.ptmx, msg.Rows, msg.Cols); err != nil {
-			log.Printf("session: resize PTY: %v", err)
+		if s.ptmx != nil {
+			if err := resizePTY(s.ptmx, msg.Rows, msg.Cols); err != nil {
+				log.Printf("session: resize PTY: %v", err)
+			}
 		}
 	case *protocol.Data:
 		s.recvSeq = msg.Seq
-		if _, err := s.ptmx.Write(msg.Payload); err != nil {
-			log.Printf("session: write to PTY: %v", err)
+		if s.ptmx != nil {
+			if _, err := s.ptmx.Write(msg.Payload); err != nil {
+				log.Printf("session: write to PTY: %v", err)
+			}
 		}
 	case *protocol.Heartbeat:
 		// Noted — no action needed
@@ -278,6 +305,8 @@ func (s *Session) handleStreamEvent(ev streamEvent) error {
 		return fmt.Errorf("client sent shutdown")
 	case *protocol.SequenceHeader:
 		// Unexpected mid-session seq header; ignore
+	case *protocol.TerminalInfo:
+		// Late TerminalInfo on reconnect — no-op (PTY already spawned)
 	default:
 		log.Printf("session: unknown message type: %T", ev.msg)
 	}
@@ -286,9 +315,10 @@ func (s *Session) handleStreamEvent(ev streamEvent) error {
 }
 
 // handleNewConn processes a newly accepted connection: closes the old one,
-// exchanges sequence headers, replays catchup data, bounces PTY size,
-// and starts stream reader goroutines.
-func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamEvent) {
+// reads TerminalInfo, spawns the PTY (on first connect), exchanges sequence
+// headers, replays catchup data, bounces PTY size, and starts stream reader
+// goroutines. Returns a non-nil error only if PTY spawn fails (fatal).
+func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamEvent) error {
 	// Close old connection — its reader goroutines will exit with errors
 	// and be discarded by the connection-tag check in handleStreamEvent.
 	s.closeConn()
@@ -308,7 +338,39 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	}); err != nil {
 		log.Printf("session: write seq header: %v", err)
 		s.closeConn()
-		return
+		return nil
+	}
+
+	// Read TerminalInfo from client (before reader goroutines start).
+	// Deadline prevents a misbehaving client from stalling the event loop.
+	s.conn.Control.SetReadDeadline(time.Now().Add(5 * time.Second))
+	msg, err := s.conn.ReadControl()
+	s.conn.Control.SetReadDeadline(time.Time{})
+	if err != nil {
+		log.Printf("session: read terminal info: %v", err)
+		s.closeConn()
+		return nil
+	}
+	ti, ok := msg.(*protocol.TerminalInfo)
+	if !ok {
+		log.Printf("session: expected TerminalInfo, got %T", msg)
+		s.closeConn()
+		return nil
+	}
+
+	// Spawn PTY on first connect, using client's TERM.
+	if s.ptmx == nil {
+		ptmx, cmd, err := spawnPTY(s.cfg.SessionID, ti.Term)
+		if err != nil {
+			s.closeConn()
+			return fmt.Errorf("spawn PTY: %w", err)
+		}
+		s.ptmx = ptmx
+		s.cmd = cmd
+		s.ptyDataCh = make(chan []byte, 4)
+		s.shellDone = make(chan struct{})
+		go s.readPTY(s.ptyDataCh)
+		go s.waitShell()
 	}
 
 	// Replay catchup: send all data the client missed.
@@ -321,7 +383,7 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 		}); err != nil {
 			log.Printf("session: catchup replay: %v", err)
 			s.closeConn()
-			return
+			return nil
 		}
 	}
 
@@ -334,6 +396,8 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	// Start reader goroutines for the new connection
 	go readStream(s.conn, "control", streamCh)
 	go readStream(s.conn, "data", streamCh)
+
+	return nil
 }
 
 // flushCoalesced sends any buffered coalesced data, storing it in the catchup

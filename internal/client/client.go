@@ -131,6 +131,17 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 		}
 
+		if err := c.sendTerminalInfo(conn); err != nil {
+			log.Printf("client: send terminal info failed: %v, retrying", err)
+			conn.Close()
+			select {
+			case <-time.After(reconnectDelay):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
 		// Enter raw mode while connected (skip for pipes/tests)
 		var oldState *term.State
 		if c.stdinFd >= 0 {
@@ -211,6 +222,11 @@ func (c *Client) handleSequenceExchange(conn *transport.Conn) error {
 	}
 
 	return nil
+}
+
+// sendTerminalInfo sends the client's TERM value on the control stream.
+func (c *Client) sendTerminalInfo(conn *transport.Conn) error {
+	return conn.WriteControl(&protocol.TerminalInfo{Term: os.Getenv("TERM")})
 }
 
 // sendResize sends the current terminal size on the control stream.

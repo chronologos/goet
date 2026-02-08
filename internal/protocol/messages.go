@@ -38,6 +38,10 @@ type Resize struct {
 
 type Shutdown struct{}
 
+type TerminalInfo struct {
+	Term string
+}
+
 type Data struct {
 	Seq     uint64
 	Payload []byte
@@ -80,6 +84,12 @@ func WriteMessage(w io.Writer, msg any) error {
 		payload = scratch[:4]
 	case *Shutdown:
 		msgType = MsgShutdown
+	case *TerminalInfo:
+		msgType = MsgTerminalInfo
+		termBytes := []byte(m.Term)
+		payload = make([]byte, 2+len(termBytes))
+		binary.BigEndian.PutUint16(payload[0:2], uint16(len(termBytes)))
+		copy(payload[2:], termBytes)
 	case *Data:
 		return writeDataMessage(w, m)
 	default:
@@ -200,6 +210,16 @@ func DecodePayload(msgType MessageType, payload []byte) (any, error) {
 
 	case MsgShutdown:
 		return &Shutdown{}, nil
+
+	case MsgTerminalInfo:
+		if len(payload) < 2 {
+			return nil, ErrShortPayload
+		}
+		termLen := binary.BigEndian.Uint16(payload[0:2])
+		if len(payload) < 2+int(termLen) {
+			return nil, ErrShortPayload
+		}
+		return &TerminalInfo{Term: string(payload[2 : 2+termLen])}, nil
 
 	case MsgData:
 		if len(payload) < DataHeaderSize {

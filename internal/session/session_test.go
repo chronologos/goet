@@ -70,6 +70,24 @@ func dialTestSession(t *testing.T, port int, passkey []byte) *transport.Conn {
 	return conn
 }
 
+// completeHandshake reads the SequenceHeader from the session and sends
+// TerminalInfo. Returns the SequenceHeader for tests that need it.
+func completeHandshake(t *testing.T, conn *transport.Conn) *protocol.SequenceHeader {
+	t.Helper()
+	msg, err := conn.ReadControl()
+	if err != nil {
+		t.Fatalf("read seq header: %v", err)
+	}
+	seqHdr, ok := msg.(*protocol.SequenceHeader)
+	if !ok {
+		t.Fatalf("expected SequenceHeader, got %T", msg)
+	}
+	if err := conn.WriteControl(&protocol.TerminalInfo{Term: "xterm-256color"}); err != nil {
+		t.Fatalf("write terminal info: %v", err)
+	}
+	return seqHdr
+}
+
 // readUntil reads data messages from the data stream until the output
 // contains substr, or the timeout expires.
 func readUntil(t *testing.T, conn *transport.Conn, substr string, timeout time.Duration) string {
@@ -104,14 +122,7 @@ func TestSessionBasicIO(t *testing.T) {
 	conn := dialTestSession(t, port, passkey)
 	defer conn.Close()
 
-	// Read the initial sequence header from server
-	msg, err := conn.ReadControl()
-	if err != nil {
-		t.Fatalf("read seq header: %v", err)
-	}
-	if _, ok := msg.(*protocol.SequenceHeader); !ok {
-		t.Fatalf("expected SequenceHeader, got %T", msg)
-	}
+	completeHandshake(t, conn)
 
 	// Send a command that produces recognizable output
 	marker := "GOET_TEST_MARKER_12345"
@@ -137,8 +148,7 @@ func TestSessionResize(t *testing.T) {
 	conn := dialTestSession(t, port, passkey)
 	defer conn.Close()
 
-	// Read initial seq header
-	conn.ReadControl()
+	completeHandshake(t, conn)
 
 	// Send resize
 	if err := conn.WriteControl(&protocol.Resize{Rows: 50, Cols: 120}); err != nil {
@@ -172,8 +182,7 @@ func TestSessionReconnect(t *testing.T) {
 	// First connection — generate some output
 	conn1 := dialTestSession(t, port, passkey)
 
-	// Read initial seq header
-	conn1.ReadControl()
+	completeHandshake(t, conn1)
 
 	marker1 := "RECONNECT_BEFORE_42"
 	if err := conn1.WriteData(&protocol.Data{
@@ -198,15 +207,7 @@ func TestSessionReconnect(t *testing.T) {
 	conn2 := dialTestSession(t, port, passkey)
 	defer conn2.Close()
 
-	// Read the sequence header — session tells us what it received from us
-	msg, err := conn2.ReadControl()
-	if err != nil {
-		t.Fatalf("read seq header: %v", err)
-	}
-	seqHdr, ok := msg.(*protocol.SequenceHeader)
-	if !ok {
-		t.Fatalf("expected SequenceHeader, got %T", msg)
-	}
+	seqHdr := completeHandshake(t, conn2)
 	// Session should have received our seq=1 data message
 	if seqHdr.LastReceivedSeq != 1 {
 		t.Fatalf("expected server recvSeq=1, got %d", seqHdr.LastReceivedSeq)
@@ -226,8 +227,7 @@ func TestSessionShellExit(t *testing.T) {
 	conn := dialTestSession(t, port, passkey)
 	defer conn.Close()
 
-	// Read initial seq header
-	conn.ReadControl()
+	completeHandshake(t, conn)
 
 	// Tell the shell to exit
 	if err := conn.WriteData(&protocol.Data{
@@ -270,8 +270,7 @@ func TestSessionShutdownFromClient(t *testing.T) {
 	conn := dialTestSession(t, port, passkey)
 	defer conn.Close()
 
-	// Read initial seq header
-	conn.ReadControl()
+	completeHandshake(t, conn)
 
 	// Send Shutdown from client
 	if err := conn.WriteControl(&protocol.Shutdown{}); err != nil {
