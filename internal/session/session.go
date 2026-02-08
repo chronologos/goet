@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chronologos/goet/internal/catchup"
+	"github.com/chronologos/goet/internal/coalesce"
 	"github.com/chronologos/goet/internal/protocol"
 	"github.com/chronologos/goet/internal/transport"
 )
@@ -44,6 +45,7 @@ type Session struct {
 	cmd     *exec.Cmd
 	ln      *transport.Listener
 	buf     *catchup.Buffer
+	coal    *coalesce.Coalescer
 	conn    *transport.Conn // current connection (nil when disconnected)
 	sendSeq uint64          // next outbound data sequence
 	recvSeq uint64          // last received data sequence from client
@@ -100,6 +102,11 @@ func (s *Session) Run(ctx context.Context) error {
 	s.Port = s.ln.Port()
 	close(s.Ready)
 
+	// --- Write coalescer ---
+
+	s.coal = coalesce.New()
+	defer s.coal.Stop()
+
 	// --- Permanent goroutines ---
 
 	ptyDataCh := make(chan []byte, 4)
@@ -121,21 +128,17 @@ func (s *Session) Run(ctx context.Context) error {
 		select {
 		case data, ok := <-ptyDataCh:
 			if !ok {
-				// PTY closed — shell is exiting, wait for shellDoneCh
+				// PTY closed — flush pending data before disabling channel
+				s.flushCoalesced()
 				ptyDataCh = nil
 				continue
 			}
-			s.sendSeq++
-			s.buf.Store(s.sendSeq, data)
-			if s.conn != nil {
-				if err := s.conn.WriteData(&protocol.Data{
-					Seq:     s.sendSeq,
-					Payload: data,
-				}); err != nil {
-					log.Printf("session: write to client: %v", err)
-					s.closeConn()
-				}
+			if s.coal.Add(data) {
+				s.flushCoalesced()
 			}
+
+		case <-s.coal.Timer():
+			s.flushCoalesced()
 
 		case ev := <-streamCh:
 			if err := s.handleStreamEvent(ev); err != nil {
@@ -167,9 +170,10 @@ func (s *Session) Run(ctx context.Context) error {
 			}
 
 		case err := <-shellDoneCh:
-			// Shell exited — notify client and return.
+			// Shell exited — flush coalesced data, notify client, and return.
 			// Short delay gives QUIC time to flush the Shutdown frame
 			// before the deferred conn.Close sends CONNECTION_CLOSE.
+			s.flushCoalesced()
 			if s.conn != nil {
 				s.conn.WriteControl(&protocol.Shutdown{})
 				time.Sleep(50 * time.Millisecond)
@@ -180,6 +184,7 @@ func (s *Session) Run(ctx context.Context) error {
 			return nil
 
 		case <-ctx.Done():
+			s.flushCoalesced()
 			return ctx.Err()
 		}
 	}
@@ -290,6 +295,9 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 
 	s.conn = newConn
 
+	// Flush coalesced data so catchup buffer has everything before replay
+	s.flushCoalesced()
+
 	// Send our SequenceHeader on control stream (tells client what we've
 	// received, so client knows what to resend from its own catchup buffer).
 	if err := s.conn.WriteControl(&protocol.SequenceHeader{
@@ -323,6 +331,26 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	// Start reader goroutines for the new connection
 	go readStream(s.conn, "control", streamCh)
 	go readStream(s.conn, "data", streamCh)
+}
+
+// flushCoalesced sends any buffered coalesced data, storing it in the catchup
+// buffer and writing to the current connection (if any).
+func (s *Session) flushCoalesced() {
+	data := s.coal.Flush()
+	if data == nil {
+		return
+	}
+	s.sendSeq++
+	s.buf.Store(s.sendSeq, data)
+	if s.conn != nil {
+		if err := s.conn.WriteData(&protocol.Data{
+			Seq:     s.sendSeq,
+			Payload: data,
+		}); err != nil {
+			log.Printf("session: write coalesced to client: %v", err)
+			s.closeConn()
+		}
+	}
 }
 
 // closeConn closes the current connection if any.

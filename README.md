@@ -1,6 +1,6 @@
 # goet — Reconnectable Remote Terminal
 
-A reconnectable remote terminal built in Go with QUIC transport. Inspired by [zet](https://github.com/iantay/zet) but redesigned from scratch.
+A reconnectable remote terminal built in Go with QUIC transport. Inspired by Eternal Terminal but redesigned from scratch.
 
 ## Why QUIC?
 
@@ -19,6 +19,8 @@ Client ←──────→ goet-session (direct QUIC, multiplexed streams)
 Two QUIC streams:
 - **Stream 0 (Control)**: Auth, resize, heartbeat, shutdown, sequence headers
 - **Stream 1 (Data)**: Terminal stdin/stdout with sequence numbers for catchup
+
+Write coalescing batches small writes into fewer, larger Data messages (2ms deadline, 32KB threshold) to reduce per-message overhead during fast output.
 
 ## Building
 

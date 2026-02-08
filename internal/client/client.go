@@ -13,6 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/chronologos/goet/internal/catchup"
+	"github.com/chronologos/goet/internal/coalesce"
 	"github.com/chronologos/goet/internal/protocol"
 	"github.com/chronologos/goet/internal/transport"
 )
@@ -234,6 +235,9 @@ func (c *Client) ioLoop(ctx context.Context, conn *transport.Conn, stdinCh <-cha
 		defer c.logProfileSummary(conn)
 	}
 
+	coal := coalesce.New()
+	defer coal.Stop()
+
 	controlCh := make(chan streamResult, 4)
 	dataCh := make(chan streamResult, 4)
 
@@ -257,23 +261,24 @@ func (c *Client) ioLoop(ctx context.Context, conn *transport.Conn, stdinCh <-cha
 		select {
 		case data, ok := <-stdinCh:
 			if !ok {
+				c.flushStdinCoalesced(coal, conn)
 				return exitStdinEOF
 			}
 			n, action := c.escape.Process(data, escapeBuf)
 			if action == EscDisconnect {
-				return exitEscape
+				return exitEscape // intentional disconnect, don't flush
 			}
 			if n > 0 {
-				c.sendSeq++
-				payload := make([]byte, n)
-				copy(payload, escapeBuf[:n])
-				c.buf.Store(c.sendSeq, payload)
-				if err := conn.WriteData(&protocol.Data{
-					Seq:     c.sendSeq,
-					Payload: payload,
-				}); err != nil {
-					return exitNetwork
+				if coal.Add(escapeBuf[:n]) {
+					if c.flushStdinCoalesced(coal, conn) != nil {
+						return exitNetwork
+					}
 				}
+			}
+
+		case <-coal.Timer():
+			if c.flushStdinCoalesced(coal, conn) != nil {
+				return exitNetwork
 			}
 
 		case res := <-controlCh:
@@ -342,6 +347,21 @@ func (c *Client) readStdin(ch chan<- []byte) {
 			return
 		}
 	}
+}
+
+// flushStdinCoalesced sends any buffered coalesced stdin data, storing it in
+// the catchup buffer and writing to the connection.
+func (c *Client) flushStdinCoalesced(coal *coalesce.Coalescer, conn *transport.Conn) error {
+	data := coal.Flush()
+	if data == nil {
+		return nil
+	}
+	c.sendSeq++
+	c.buf.Store(c.sendSeq, data)
+	return conn.WriteData(&protocol.Data{
+		Seq:     c.sendSeq,
+		Payload: data,
+	})
 }
 
 // streamResult carries a message or error from a stream reader goroutine.
