@@ -47,5 +47,6 @@
 - [x] `--profile` flag for RTT measurement (QUIC-level stats via ConnectionStats)
 - [ ] Write coalescing (2ms timer)
 - [x] `-race` clean under `go test -race ./...`
+- [ ] Propagate client TERM to session (currently hardcoded xterm-256color fallback)
 - [ ] Signal handling edge cases
 - [ ] PTY cleanup on crash

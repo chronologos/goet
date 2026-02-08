@@ -24,7 +24,13 @@ func spawnPTY(sessionID string) (*os.File, *exec.Cmd, error) {
 	shellBase := filepath.Base(shell)
 	cmd.Args[0] = "-" + shellBase
 
-	cmd.Env = append(os.Environ(), "GOET_SESSION="+sessionID)
+	env := os.Environ()
+	// Ensure TERM is set — SSH without -t doesn't provide one,
+	// and many programs (clear, less, vim) need it.
+	if os.Getenv("TERM") == "" {
+		env = append(env, "TERM=xterm-256color")
+	}
+	cmd.Env = append(env, "GOET_SESSION="+sessionID)
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
