@@ -261,7 +261,7 @@ func (c *Client) ioLoop(ctx context.Context, conn *transport.Conn, stdinCh <-cha
 		select {
 		case data, ok := <-stdinCh:
 			if !ok {
-				c.flushStdinCoalesced(coal, conn)
+				c.flushStdinCoalesced(coal, conn) // best-effort; error ignored — we're exiting anyway
 				return exitStdinEOF
 			}
 			n, action := c.escape.Process(data, escapeBuf)
@@ -328,6 +328,7 @@ func (c *Client) ioLoop(ctx context.Context, conn *transport.Conn, stdinCh <-cha
 			}
 
 		case <-ctx.Done():
+			// Don't flush coalescer — at most 2ms of stdin lost, acceptable on cancellation
 			return exitCancelled
 		}
 	}

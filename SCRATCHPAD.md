@@ -132,3 +132,21 @@ This is strictly better than application-level heartbeat RTT: higher sample rate
 3. Wire into ioLoop (heartbeat + defer)
 4. Add `--profile` to CLI
 5. Test manually, add `TestProfileOutput`
+
+## Phase 6b: Write Coalescing
+
+### Deadline, not debounce
+Timer starts on first byte in a batch and is NOT reset by subsequent adds. Under continuous fast output (`cat bigfile`), data flushes every 2ms. A debounce approach ("2ms after last byte") would never flush under sustained load.
+
+### Coalescer lifetime: session vs client
+- **Session**: `coal` is a struct field — persists across reconnections. PTY output arrives regardless of client state. When disconnected, flushed data goes into the catchup buffer (`s.conn == nil` path) and is replayed on reconnect.
+- **Client**: `coal` is local to `ioLoop` — fresh per connection. At most 2ms of unsent keystrokes lost on disconnect, same as typing during an outage.
+
+### Flush ordering in handleNewConn
+Flush happens after `s.conn = newConn` but before catchup replay. This ensures coalesced PTY data is both stored in catchup AND sent to the new client, followed by proper replay of older data.
+
+### Nil channel select trick
+`Timer()` returns nil when no deadline is active. Nil channels block forever in select, effectively disabling the case without any wrapper logic. Same pattern used by `time.After` internally.
+
+### No flush on `~.` escape
+When the user types `~.`, the client returns `exitEscape` immediately without flushing the coalescer. The user wants to disconnect — sending pending keystrokes would be surprising. On `stdinEOF` (clean exit), we do flush.

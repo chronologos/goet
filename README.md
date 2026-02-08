@@ -52,6 +52,6 @@ goet --local -p 3000 -k "$PASSKEY" -s "$SESSION" 127.0.0.1
 
 ## Status
 
-Phase 1 complete: protocol encoding/decoding, authentication (HMAC-SHA256), catchup ring buffer.
+Phases 1–5 complete. Phase 6 (Polish) in progress: profiling, write coalescing done.
 
 See [BACKLOG.md](BACKLOG.md) for remaining work.

@@ -293,10 +293,13 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	// and be discarded by the connection-tag check in handleStreamEvent.
 	s.closeConn()
 
-	s.conn = newConn
-
-	// Flush coalesced data so catchup buffer has everything before replay
+	// Flush coalesced data into catchup buffer before setting new conn.
+	// Must happen while s.conn is still nil so data is stored in catchup
+	// (for replay) without also being written to the new connection directly,
+	// which would cause duplicate delivery.
 	s.flushCoalesced()
+
+	s.conn = newConn
 
 	// Send our SequenceHeader on control stream (tells client what we've
 	// received, so client knows what to resend from its own catchup buffer).
