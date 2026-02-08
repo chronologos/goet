@@ -1,10 +1,14 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	"github.com/chronologos/goet/internal/transport"
+	"github.com/chronologos/goet/internal/version"
 )
 
 // logProfile emits a periodic RTT/loss line to stderr.
@@ -21,7 +25,7 @@ func (c *Client) logProfile(conn *transport.Conn) {
 	)
 }
 
-// logProfileSummary emits a final summary to stderr.
+// logProfileSummary emits a final summary to stderr and writes JSON to /tmp.
 // Called via defer in ioLoop when Profile is enabled.
 func (c *Client) logProfileSummary(conn *transport.Conn) {
 	stats := conn.QConn.ConnectionStats()
@@ -41,6 +45,79 @@ func (c *Client) logProfileSummary(conn *transport.Conn) {
 		stats.PacketsReceived,
 		stats.PacketsLost,
 	)
+
+	c.writeProfileJSON(conn)
+}
+
+// profileJSON is the structured output written to /tmp.
+type profileJSON struct {
+	Timestamp string         `json:"timestamp"`
+	Commit    string         `json:"commit"`
+	Host      string         `json:"host"`
+	DurationS float64        `json:"duration_s"`
+	RTT       profileRTT     `json:"rtt"`
+	Traffic   profileTraffic `json:"traffic"`
+}
+
+type profileRTT struct {
+	MinMs    float64 `json:"min_ms"`
+	SmoothMs float64 `json:"smooth_ms"`
+	LatestMs float64 `json:"latest_ms"`
+	JitterMs float64 `json:"jitter_ms"`
+}
+
+type profileTraffic struct {
+	BytesSent uint64 `json:"bytes_sent"`
+	BytesRecv uint64 `json:"bytes_recv"`
+	PktsSent  uint64 `json:"pkts_sent"`
+	PktsRecv  uint64 `json:"pkts_recv"`
+	PktsLost  uint64 `json:"pkts_lost"`
+}
+
+// writeProfileJSON dumps a JSON profile to /tmp/goet-profile-<timestamp>.json.
+func (c *Client) writeProfileJSON(conn *transport.Conn) {
+	stats := conn.QConn.ConnectionStats()
+	now := time.Now()
+	duration := now.Sub(c.profileStart)
+
+	p := profileJSON{
+		Timestamp: now.UTC().Format(time.RFC3339),
+		Commit:    version.Commit,
+		Host:      c.cfg.Host,
+		DurationS: duration.Seconds(),
+		RTT: profileRTT{
+			MinMs:    msFloat(stats.MinRTT),
+			SmoothMs: msFloat(stats.SmoothedRTT),
+			LatestMs: msFloat(stats.LatestRTT),
+			JitterMs: msFloat(stats.MeanDeviation),
+		},
+		Traffic: profileTraffic{
+			BytesSent: stats.BytesSent,
+			BytesRecv: stats.BytesReceived,
+			PktsSent:  stats.PacketsSent,
+			PktsRecv:  stats.PacketsReceived,
+			PktsLost:  stats.PacketsLost,
+		},
+	}
+
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		log.Printf("profile: json marshal: %v", err)
+		return
+	}
+
+	filename := fmt.Sprintf("/tmp/goet-profile-%s.json", now.Format("20060102-150405"))
+	if err := os.WriteFile(filename, data, 0644); err != nil {
+		log.Printf("profile: write %s: %v", filename, err)
+		return
+	}
+
+	fmt.Fprintf(c.stderr, "[profile] wrote %s\n", filename)
+}
+
+// msFloat converts a Duration to milliseconds as float64.
+func msFloat(d time.Duration) float64 {
+	return float64(d) / float64(time.Millisecond)
 }
 
 // formatBytes formats a byte count as a human-readable string.

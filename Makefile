@@ -1,9 +1,11 @@
 GO ?= go
+COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
+LDFLAGS := -X github.com/chronologos/goet/internal/version.Commit=$(COMMIT)
 
 .PHONY: build install test test-race fuzz clean
 
 build:
-	$(GO) build -o goet ./cmd/goet
+	$(GO) build -ldflags "$(LDFLAGS)" -o goet ./cmd/goet
 
 install: build
 	mkdir -p ~/.local/bin
