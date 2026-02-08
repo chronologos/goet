@@ -164,26 +164,14 @@ func (s *Session) Run(ctx context.Context) error {
 			}
 
 		case <-shellDone:
-			// Shell exited — flush coalesced data, notify client, and return.
-			// Short delay gives QUIC time to flush the Shutdown frame
-			// before the deferred conn.Close sends CONNECTION_CLOSE.
-			s.flushCoalesced()
-			if s.conn != nil {
-				s.conn.WriteControl(&protocol.Shutdown{})
-				time.Sleep(50 * time.Millisecond)
-			}
+			s.gracefulShutdown()
 			if s.shellErr != nil {
 				return fmt.Errorf("shell exited: %w", s.shellErr)
 			}
 			return nil
 
 		case <-ctx.Done():
-			// Graceful shutdown: notify client before tearing down.
-			s.flushCoalesced()
-			if s.conn != nil {
-				s.conn.WriteControl(&protocol.Shutdown{})
-				time.Sleep(50 * time.Millisecond)
-			}
+			s.gracefulShutdown()
 			return ctx.Err()
 		}
 	}
@@ -398,6 +386,17 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	go readStream(s.conn, "data", streamCh)
 
 	return nil
+}
+
+// gracefulShutdown flushes pending data and notifies the client before teardown.
+// The short sleep gives QUIC time to flush the Shutdown frame before the
+// deferred conn.Close sends CONNECTION_CLOSE.
+func (s *Session) gracefulShutdown() {
+	s.flushCoalesced()
+	if s.conn != nil {
+		s.conn.WriteControl(&protocol.Shutdown{})
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // flushCoalesced sends any buffered coalesced data, storing it in the catchup

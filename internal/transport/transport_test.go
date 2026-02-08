@@ -3,8 +3,12 @@ package transport
 import (
 	"bytes"
 	"context"
+	"net"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/quic-go/quic-go"
 
 	"github.com/chronologos/goet/internal/auth"
 	"github.com/chronologos/goet/internal/protocol"
@@ -273,5 +277,122 @@ func TestSequenceHeaderExchange(t *testing.T) {
 	seqHdr = msg.(*protocol.SequenceHeader)
 	if seqHdr.LastReceivedSeq != 99 {
 		t.Fatalf("expected 99, got %d", seqHdr.LastReceivedSeq)
+	}
+}
+
+// TestSequenceHeaderDeadlineTimeout verifies that a client which connects,
+// authenticates, and opens a data stream but never sends a SequenceHeader
+// gets disconnected by the 5-second deadline in session_listener.go.
+func TestSequenceHeaderDeadlineTimeout(t *testing.T) {
+	passkey, err := auth.GeneratePasskey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := Listen(0, passkey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	// Accept with a timeout long enough for the 5s deadline to fire.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	acceptErr := make(chan error, 1)
+	go func() {
+		_, err := ln.Accept(ctx)
+		acceptErr <- err
+	}()
+
+	// --- Manually replicate client-side auth, but skip SequenceHeader ---
+
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
+	if err != nil {
+		t.Fatalf("listen UDP: %v", err)
+	}
+	defer udpConn.Close()
+
+	tr := &quic.Transport{Conn: udpConn}
+	defer tr.Close()
+
+	serverAddr, err := net.ResolveUDPAddr("udp4",
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(ln.Port())))
+	if err != nil {
+		t.Fatalf("resolve addr: %v", err)
+	}
+
+	tlsConf := ClientTLSConfig()
+	quicConf := &quic.Config{
+		MaxIdleTimeout:    30 * time.Second,
+		InitialPacketSize: 1200,
+	}
+
+	qconn, err := tr.Dial(ctx, serverAddr, tlsConf, quicConf)
+	if err != nil {
+		t.Fatalf("QUIC dial: %v", err)
+	}
+	defer qconn.CloseWithError(0, "test done")
+
+	// Open control stream and perform auth
+	controlStream, err := qconn.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatalf("open control stream: %v", err)
+	}
+
+	connState := qconn.ConnectionState()
+	material, err := connState.TLS.ExportKeyingMaterial("goet-auth-v1", nil, 32)
+	if err != nil {
+		t.Fatalf("export keying material: %v", err)
+	}
+	token := auth.ComputeAuthToken(passkey, material)
+
+	if err := protocol.WriteMessage(controlStream, &protocol.AuthRequest{Token: token}); err != nil {
+		t.Fatalf("write auth request: %v", err)
+	}
+
+	msg, err := protocol.ReadMessage(controlStream)
+	if err != nil {
+		t.Fatalf("read auth response: %v", err)
+	}
+	resp, ok := msg.(*protocol.AuthResponse)
+	if !ok {
+		t.Fatalf("expected AuthResponse, got %T", msg)
+	}
+	if resp.Status != protocol.AuthOK {
+		t.Fatalf("auth rejected: status %d", resp.Status)
+	}
+
+	// Open data stream and write a single byte to make it visible to the
+	// server (QUIC only sends STREAM frames on first Write), but do NOT send
+	// a valid SequenceHeader. This makes the server's AcceptStream succeed,
+	// but the subsequent ReadMessage (which has a 5s deadline) will time out.
+	dataStream, err := qconn.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatalf("open data stream: %v", err)
+	}
+	// Write a single byte — not enough for a valid framed message header (5 bytes).
+	if _, err := dataStream.Write([]byte{0x00}); err != nil {
+		t.Fatalf("write partial data: %v", err)
+	}
+
+	// Wait for Accept to return with an error (deadline exceeded).
+	start := time.Now()
+	select {
+	case err := <-acceptErr:
+		elapsed := time.Since(start)
+		if err == nil {
+			t.Fatal("expected Accept to fail, got nil error")
+		}
+		// The deadline is 5 seconds; verify it fires in a reasonable range.
+		if elapsed < 4*time.Second {
+			t.Fatalf("Accept returned too quickly (%v), expected ~5s deadline", elapsed)
+		}
+		if elapsed > 8*time.Second {
+			t.Fatalf("Accept took too long (%v), expected ~5s deadline", elapsed)
+		}
+		t.Logf("Accept correctly failed after %v: %v", elapsed, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: Accept did not return within 10s")
 	}
 }

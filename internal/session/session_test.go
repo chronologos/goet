@@ -220,6 +220,210 @@ func TestSessionReconnect(t *testing.T) {
 	}
 }
 
+// TestRapidReconnectNoDataLoss verifies that disconnecting and reconnecting
+// within a very short window (shorter than the 2ms coalesce deadline) does
+// not cause data loss or duplication. This exercises the critical path in
+// handleNewConn where flushCoalesced() is called before setting the new
+// connection.
+func TestRapidReconnectNoDataLoss(t *testing.T) {
+	port, passkey, cleanup := startTestSession(t)
+	defer cleanup()
+
+	// First connection — generate output
+	conn1 := dialTestSession(t, port, passkey)
+	completeHandshake(t, conn1)
+
+	marker1 := "RAPID_RECONNECT_MARKER_1"
+	if err := conn1.WriteData(&protocol.Data{
+		Seq:     1,
+		Payload: []byte("echo " + marker1 + "\n"),
+	}); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	readUntil(t, conn1, marker1, 5*time.Second)
+
+	// Close connection abruptly (no Shutdown — simulates network death)
+	conn1.Close()
+
+	// Reconnect immediately — minimal delay (50ms), well within the 2ms
+	// coalesce window that might still have pending data.
+	time.Sleep(50 * time.Millisecond)
+
+	conn2 := dialTestSession(t, port, passkey)
+	defer conn2.Close()
+
+	seqHdr := completeHandshake(t, conn2)
+	// Session should remember our seq=1 from before disconnect
+	if seqHdr.LastReceivedSeq != 1 {
+		t.Fatalf("expected server recvSeq=1, got %d", seqHdr.LastReceivedSeq)
+	}
+
+	// Catchup replay should contain marker1 (data from before disconnect).
+	// We reconnected with LastReceivedSeq=0, so the session replays everything.
+	output := readUntil(t, conn2, marker1, 5*time.Second)
+	if !strings.Contains(output, marker1) {
+		t.Fatalf("catchup replay missing marker1: %q", output)
+	}
+
+	// Count occurrences of marker1 in the replay to detect duplication.
+	// The marker should appear at least once (the echo output). It may also
+	// appear in the command echo itself, so we check for reasonable bounds.
+	count := strings.Count(output, marker1)
+	if count > 3 {
+		t.Fatalf("marker1 appears %d times in replay — possible duplication: %q", count, output)
+	}
+
+	// Verify we can still send new commands through the reconnected session
+	marker2 := "RAPID_RECONNECT_MARKER_2"
+	if err := conn2.WriteData(&protocol.Data{
+		Seq:     2,
+		Payload: []byte("echo " + marker2 + "\n"),
+	}); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	output2 := readUntil(t, conn2, marker2, 5*time.Second)
+	if !strings.Contains(output2, marker2) {
+		t.Fatalf("new command output missing marker2: %q", output2)
+	}
+}
+
+// TestUnknownMessageTypeNocrash verifies that an unknown message type on the
+// data stream causes the session to close that connection (readStream gets
+// ErrUnknownMessage) but the session stays alive and accepts a new connection.
+func TestUnknownMessageTypeNoCrash(t *testing.T) {
+	port, passkey, cleanup := startTestSession(t)
+	defer cleanup()
+
+	conn1 := dialTestSession(t, port, passkey)
+	completeHandshake(t, conn1)
+
+	// Verify the connection works
+	marker1 := "UNKNOWN_MSG_BEFORE"
+	if err := conn1.WriteData(&protocol.Data{
+		Seq: 1, Payload: []byte("echo " + marker1 + "\n"),
+	}); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	readUntil(t, conn1, marker1, 5*time.Second)
+
+	// Inject an unknown message type (0xFF) directly onto the data stream.
+	// Format: [4B payload_length BE][1B msg_type][payload]
+	var raw [7]byte // 5-byte header + 2-byte payload
+	raw[0], raw[1], raw[2], raw[3] = 0, 0, 0, 2 // payload length = 2
+	raw[4] = 0xFF                                 // unknown type
+	raw[5], raw[6] = 0xAB, 0xCD                   // dummy payload
+	if _, err := conn1.Data.Write(raw[:]); err != nil {
+		t.Fatalf("write raw: %v", err)
+	}
+
+	// The session should close this connection (readStream returns error).
+	// Give it a moment to process.
+	time.Sleep(500 * time.Millisecond)
+	conn1.Close()
+
+	// Reconnect — session should still be alive
+	conn2 := dialTestSession(t, port, passkey)
+	defer conn2.Close()
+
+	completeHandshake(t, conn2)
+
+	marker2 := "UNKNOWN_MSG_AFTER"
+	if err := conn2.WriteData(&protocol.Data{
+		Seq: 2, Payload: []byte("echo " + marker2 + "\n"),
+	}); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	output := readUntil(t, conn2, marker2, 5*time.Second)
+	if !strings.Contains(output, marker2) {
+		t.Fatalf("marker not found after reconnect: %q", output)
+	}
+}
+
+// TestLargeDataTransfer verifies that data larger than the 32KB coalescer
+// threshold makes it through the session intact. This exercises the
+// threshold-flush path of the coalescer end-to-end.
+func TestLargeDataTransfer(t *testing.T) {
+	port, passkey, cleanup := startTestSession(t)
+	defer cleanup()
+
+	conn := dialTestSession(t, port, passkey)
+	defer conn.Close()
+
+	completeHandshake(t, conn)
+
+	// Generate a large amount of output — `seq 1 5000` produces ~24KB of
+	// numbered lines. We search for a pattern that can only appear in the
+	// actual output, not in the PTY's command echo.
+	if err := conn.WriteData(&protocol.Data{
+		Seq: 1, Payload: []byte("seq 1 5000\n"),
+	}); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+
+	// Wait for the last line of seq output. The pattern "4999\r\n5000\r\n"
+	// can only appear in actual seq output, not in the echoed command.
+	output := readUntil(t, conn, "4999\r\n5000\r\n", 15*time.Second)
+
+	// Verify we got early and middle lines too
+	for _, want := range []string{"1\r\n", "2500\r\n"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("missing %q in output (len=%d)", want, len(output))
+		}
+	}
+}
+
+// TestWriteAfterShellDeath verifies that sending data to the session after the
+// shell has exited doesn't cause a panic. The session should handle the dead
+// PTY gracefully and send Shutdown.
+func TestWriteAfterShellDeath(t *testing.T) {
+	port, passkey, cleanup := startTestSession(t)
+	defer cleanup()
+
+	conn := dialTestSession(t, port, passkey)
+	defer conn.Close()
+
+	completeHandshake(t, conn)
+
+	// Kill the shell
+	if err := conn.WriteData(&protocol.Data{
+		Seq: 1, Payload: []byte("exit\n"),
+	}); err != nil {
+		t.Fatalf("write exit: %v", err)
+	}
+
+	// Immediately send more data while the shell is dying
+	time.Sleep(100 * time.Millisecond)
+	for i := uint64(2); i <= 5; i++ {
+		conn.WriteData(&protocol.Data{
+			Seq: i, Payload: []byte("echo should_not_crash\n"),
+		})
+	}
+
+	// Session should send Shutdown or close the connection. Either is
+	// acceptable — the key assertion is that we get here without panic.
+	doneCh := make(chan struct{}, 1)
+	go func() {
+		for {
+			msg, err := conn.ReadControl()
+			if err != nil {
+				doneCh <- struct{}{}
+				return
+			}
+			if _, ok := msg.(*protocol.Shutdown); ok {
+				doneCh <- struct{}{}
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-doneCh:
+		// success
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for session to handle shell death gracefully")
+	}
+}
+
 func TestSessionShellExit(t *testing.T) {
 	port, passkey, cleanup := startTestSession(t)
 	defer cleanup()

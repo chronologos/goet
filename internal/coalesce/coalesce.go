@@ -112,7 +112,3 @@ func (c *Coalescer) Stop() {
 	c.armed = false
 }
 
-// Pending returns the number of buffered bytes.
-func (c *Coalescer) Pending() int {
-	return len(c.buf)
-}

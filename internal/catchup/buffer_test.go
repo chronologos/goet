@@ -71,8 +71,8 @@ func TestByteEviction(t *testing.T) {
 		buf.Store(i, bytes.Repeat([]byte("x"), 20))
 	}
 
-	if buf.Size() > 100 {
-		t.Fatalf("buffer size %d exceeds max 100", buf.Size())
+	if buf.size > 100 {
+		t.Fatalf("buffer size %d exceeds max 100", buf.size)
 	}
 
 	// Newest entries should survive
@@ -97,61 +97,11 @@ func TestSlotEviction(t *testing.T) {
 		buf.Store(i, []byte("x"))
 	}
 
-	if buf.Count() > buf.capacity {
-		t.Fatalf("count %d exceeds capacity %d", buf.Count(), buf.capacity)
+	if buf.count > buf.capacity {
+		t.Fatalf("count %d exceeds capacity %d", buf.count, buf.capacity)
 	}
 	if buf.NewestSeq() != 300 {
 		t.Fatalf("expected newest 300, got %d", buf.NewestSeq())
-	}
-}
-
-func TestCanCatchupFull(t *testing.T) {
-	buf := New(1024)
-	buf.Store(1, []byte("a"))
-	buf.Store(2, []byte("b"))
-	buf.Store(3, []byte("c"))
-
-	full, partial := buf.CanCatchup(1)
-	if !full {
-		t.Fatal("should be full catchup")
-	}
-	if partial {
-		t.Fatal("should not be partial")
-	}
-}
-
-func TestCanCatchupPartial(t *testing.T) {
-	buf := New(50)
-	// Fill and evict
-	for i := uint64(1); i <= 20; i++ {
-		buf.Store(i, bytes.Repeat([]byte("x"), 10))
-	}
-
-	// Ask for seq 1, which has been evicted
-	full, partial := buf.CanCatchup(1)
-	if full {
-		t.Fatal("should not be full catchup — old entries evicted")
-	}
-	if !partial {
-		t.Fatal("should be partial catchup")
-	}
-}
-
-func TestCanCatchupCaughtUp(t *testing.T) {
-	buf := New(1024)
-	buf.Store(1, []byte("a"))
-
-	full, partial := buf.CanCatchup(1)
-	if full || partial {
-		t.Fatal("client is caught up, should return false/false")
-	}
-}
-
-func TestCanCatchupEmpty(t *testing.T) {
-	buf := New(1024)
-	full, partial := buf.CanCatchup(0)
-	if full || partial {
-		t.Fatal("empty buffer should return false/false")
 	}
 }
 
@@ -209,7 +159,6 @@ func TestConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
 				buf.ReplaySince(0)
-				buf.CanCatchup(0)
 				buf.OldestSeq()
 				buf.NewestSeq()
 			}
@@ -219,9 +168,76 @@ func TestConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	// Just verify no panic/race — exact count depends on scheduling
-	if buf.Count() == 0 {
+	if buf.NewestSeq() == 0 {
 		t.Fatal("expected some entries after concurrent writes")
 	}
+}
+
+// TestPartialCatchupReplayAfterEviction verifies that when entries have been
+// evicted from the ring buffer, ReplaySince returns only the surviving entries.
+// This simulates a reconnecting client that missed more data than the buffer
+// can hold — it gets a correct but incomplete history starting from the oldest
+// surviving entry.
+func TestPartialCatchupReplayAfterEviction(t *testing.T) {
+	// Small buffer: 256 bytes max. With 50-byte payloads, only ~5 entries fit.
+	buf := New(256)
+
+	// Store 20 entries of 50 bytes each (1000 bytes total). The first ~15
+	// entries must be evicted to stay under the 256-byte limit.
+	payloadSize := 50
+	totalEntries := uint64(20)
+	for i := uint64(1); i <= totalEntries; i++ {
+		payload := bytes.Repeat([]byte{byte('A' + i%26)}, payloadSize)
+		buf.Store(i, payload)
+	}
+
+	// ReplaySince(0) asks for everything — but evicted entries are gone.
+	entries := buf.ReplaySince(0)
+
+	if len(entries) == 0 {
+		t.Fatal("expected some entries from ReplaySince(0), got none")
+	}
+
+	// The oldest surviving entry must have seq > 1 (proving eviction occurred).
+	if entries[0].Seq <= 1 {
+		t.Fatalf("expected eviction of early entries, but oldest returned seq is %d", entries[0].Seq)
+	}
+
+	// The newest entry must be the last one stored.
+	if entries[len(entries)-1].Seq != totalEntries {
+		t.Fatalf("expected newest seq %d, got %d", totalEntries, entries[len(entries)-1].Seq)
+	}
+
+	// Verify all returned entries are contiguous (no gaps in the surviving range).
+	for i := 1; i < len(entries); i++ {
+		if entries[i].Seq != entries[i-1].Seq+1 {
+			t.Fatalf("gap in replay: seq %d followed by %d", entries[i-1].Seq, entries[i].Seq)
+		}
+	}
+
+	// Verify each payload is correct (matches the pattern from Store).
+	for _, e := range entries {
+		expected := bytes.Repeat([]byte{byte('A' + e.Seq%26)}, payloadSize)
+		if !bytes.Equal(e.Payload, expected) {
+			t.Fatalf("payload mismatch at seq %d: got %q, want %q", e.Seq, e.Payload[:5], expected[:5])
+		}
+	}
+
+	// Verify ReplaySince with a seq that's been evicted still returns
+	// only surviving entries (not an error).
+	entriesFromEvicted := buf.ReplaySince(2)
+	if len(entriesFromEvicted) == 0 {
+		t.Fatal("ReplaySince(2) should return surviving entries even though seq 2 was evicted")
+	}
+	// Should return the same entries as ReplaySince(0) since seq 2 is before
+	// the oldest surviving entry anyway.
+	if entriesFromEvicted[0].Seq != entries[0].Seq {
+		t.Fatalf("ReplaySince(2) oldest seq %d != ReplaySince(0) oldest seq %d",
+			entriesFromEvicted[0].Seq, entries[0].Seq)
+	}
+
+	t.Logf("buffer holds %d of %d entries (oldest seq=%d, newest seq=%d)",
+		len(entries), totalEntries, entries[0].Seq, entries[len(entries)-1].Seq)
 }
 
 // --- Fuzz tests ---
@@ -244,11 +260,11 @@ func FuzzBufferStoreReplay(f *testing.F) {
 		// Size can exceed maxSize when a single payload is larger than maxSize
 		// (soft eviction — documented behavior). But with multiple entries,
 		// eviction should keep total close to maxSize.
-		if buf.Count() > 1 && buf.Size() > 256+len(payload) {
-			t.Fatalf("size %d too large with %d entries", buf.Size(), buf.Count())
+		if buf.count > 1 && buf.size > 256+len(payload) {
+			t.Fatalf("size %d too large with %d entries", buf.size, buf.count)
 		}
-		if buf.Count() > buf.capacity {
-			t.Fatalf("count %d exceeds capacity %d", buf.Count(), buf.capacity)
+		if buf.count > buf.capacity {
+			t.Fatalf("count %d exceeds capacity %d", buf.count, buf.capacity)
 		}
 
 		entries := buf.ReplaySince(replayAfter)
@@ -275,19 +291,19 @@ func FuzzBufferEviction(f *testing.F) {
 			buf.Store(i, payload)
 		}
 
-		if buf.Size() < 0 {
-			t.Fatalf("negative size %d", buf.Size())
+		if buf.size < 0 {
+			t.Fatalf("negative size %d", buf.size)
 		}
-		if buf.Count() < 0 || buf.Count() > buf.capacity {
-			t.Fatalf("count %d out of range [0, %d]", buf.Count(), buf.capacity)
+		if buf.count < 0 || buf.count > buf.capacity {
+			t.Fatalf("count %d out of range [0, %d]", buf.count, buf.capacity)
 		}
 
-		if buf.Count() > 0 {
+		if buf.count > 0 {
 			if buf.NewestSeq() != uint64(n) {
 				t.Fatalf("newest seq = %d, want %d", buf.NewestSeq(), n)
 			}
 			if buf.OldestSeq() == 0 {
-				t.Fatalf("oldest seq is 0 with count %d", buf.Count())
+				t.Fatalf("oldest seq is 0 with count %d", buf.count)
 			}
 		}
 	})

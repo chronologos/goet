@@ -304,6 +304,59 @@ func TestClientSessionShutdown(t *testing.T) {
 	}
 }
 
+// TestHeartbeatKeepsConnectionAlive verifies that the client stays connected
+// when the session is sending heartbeats. The session sends heartbeats every
+// 5 seconds, and the client's recvTimeout is 15 seconds. This test verifies
+// the client survives through one complete heartbeat cycle (6+ seconds)
+// and remains functional afterward.
+func TestHeartbeatKeepsConnectionAlive(t *testing.T) {
+	port, passkey, sessionCleanup := startTestSession(t)
+	defer sessionCleanup()
+
+	stdinW, stdoutR, errCh, cancel := startTestClient(t, port, passkey)
+	defer cancel()
+	defer stdinW.Close()
+	defer stdoutR.Close()
+
+	// Wait for connection
+	time.Sleep(200 * time.Millisecond)
+
+	// Send a command to prove the connection works initially
+	marker1 := "HEARTBEAT_ALIVE_1"
+	if _, err := stdinW.Write([]byte("echo " + marker1 + "\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	readUntilFromPipe(t, stdoutR, marker1, 5*time.Second)
+
+	// Wait for one full heartbeat cycle (heartbeatInterval=5s) plus margin.
+	// The session should send at least one heartbeat during this time,
+	// keeping the client alive (recvTimeout=15s).
+	time.Sleep(7 * time.Second)
+
+	// Client should still be running — errCh should be empty
+	select {
+	case err := <-errCh:
+		t.Fatalf("client exited unexpectedly during heartbeat cycle: %v", err)
+	default:
+		// Good — client is still alive
+	}
+
+	// Verify the client is still functional by sending another command
+	marker2 := "HEARTBEAT_ALIVE_2"
+	if _, err := stdinW.Write([]byte("echo " + marker2 + "\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	readUntilFromPipe(t, stdoutR, marker2, 5*time.Second)
+
+	cancel()
+	select {
+	case <-errCh:
+		// Clean exit
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for client to exit after cancel")
+	}
+}
+
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
 		input uint64

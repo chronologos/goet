@@ -43,10 +43,18 @@
 - [x] E2E test: `tests/e2e_ssh_test.sh`
 - [x] Fuzz tests: escape processor (single + multi-call), parseDestination, catchup buffer (store/replay + eviction)
 
-## Phase 6: Polish
+## Phase 6: Polish ✅
 - [x] `--profile` flag for RTT measurement (QUIC-level stats via ConnectionStats)
 - [x] Write coalescing (2ms timer)
 - [x] `-race` clean under `go test -race ./...`
 - [x] Propagate client TERM to session (TerminalInfo message, deferred PTY spawn)
 - [x] Signal handling edge cases (graceful Shutdown on ctx cancel)
 - [x] PTY cleanup on crash (SIGHUP via ptmx.Close, 2s grace, SIGKILL fallback)
+
+## Phase 7: Future Work
+- [ ] Idle timeout — configurable timeout to kill sessions when no client is connected, preventing zombie sessions
+- [ ] Structured logging — replace `log.Printf` with `log/slog` for leveled, structured output
+- [ ] UDP hole-punching / NAT traversal — QUIC supports this but goet currently assumes direct reachability; matters for mobile/roaming behind restrictive NATs
+- [ ] Port forwarding — TCP tunnel support (`-L` style), the biggest feature gap vs ET
+- [ ] Jump host / proxy support — connect through intermediate hosts
+- [ ] Session listing / reattach — `goet list` to find orphaned sessions on a remote host

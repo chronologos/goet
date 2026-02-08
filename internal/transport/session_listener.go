@@ -28,11 +28,11 @@ func Listen(port int, passkey []byte) (*Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate TLS cert: %w", err)
 	}
-	return ListenWithCert(port, passkey, cert)
+	return listenWithCert(port, passkey, cert)
 }
 
-// ListenWithCert creates a QUIC listener using the provided TLS certificate.
-func ListenWithCert(port int, passkey []byte, cert tls.Certificate) (*Listener, error) {
+// listenWithCert creates a QUIC listener using the provided TLS certificate.
+func listenWithCert(port int, passkey []byte, cert tls.Certificate) (*Listener, error) {
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: port}
 	udpConn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
@@ -132,8 +132,11 @@ func (l *Listener) authenticate(ctx context.Context, qconn *quic.Conn) (*Conn, e
 	if err != nil {
 		return nil, fmt.Errorf("accept data stream: %w", err)
 	}
-	// Read the client's sequence header (last received seq)
+	// Read the client's sequence header (last received seq).
+	// Deadline prevents a misbehaving client from blocking the accept path.
+	dataStream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	msg, err = protocol.ReadMessage(dataStream)
+	dataStream.SetReadDeadline(time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("read data stream seq header: %w", err)
 	}

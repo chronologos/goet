@@ -10,8 +10,8 @@ func TestAddAndFlush(t *testing.T) {
 	defer c.Stop()
 
 	c.Add([]byte("hello"))
-	if c.Pending() != 5 {
-		t.Fatalf("expected 5 pending, got %d", c.Pending())
+	if len(c.buf) != 5 {
+		t.Fatalf("expected 5 pending, got %d", len(c.buf))
 	}
 
 	data := c.Flush()
@@ -20,8 +20,8 @@ func TestAddAndFlush(t *testing.T) {
 	}
 
 	// After flush, empty
-	if c.Pending() != 0 {
-		t.Fatalf("expected 0 pending after flush, got %d", c.Pending())
+	if len(c.buf) != 0 {
+		t.Fatalf("expected 0 pending after flush, got %d", len(c.buf))
 	}
 	if c.Flush() != nil {
 		t.Fatal("expected nil from second flush")
@@ -136,7 +136,7 @@ func TestEmptyAdd(t *testing.T) {
 	if c.Add([]byte{}) {
 		t.Fatal("empty add should return false")
 	}
-	if c.Pending() != 0 {
+	if len(c.buf) != 0 {
 		t.Fatal("pending should be 0 after empty adds")
 	}
 }

@@ -152,7 +152,7 @@ A PTY is a kernel mechanism that fakes a hardware terminal — a pair of file de
 
 Without a PTY, piped stdin/stdout breaks vim, less, htop, line editing, job control, and anything that checks `isatty()`.
 
-goet's `spawnPTY()` starts a login shell (prepends `-` to argv[0] for profile loading), defaults TERM to xterm-256color when unset, and starts at 24x80. The `bouncePTYSize()` trick shrinks the PTY by 1 row on reconnect so the client's real size always triggers a genuine `SIGWINCH`, forcing TUI redraw.
+goet's `spawnPTY()` starts a login shell (prepends `-` to argv[0] for profile loading) and starts at 24x80. The client sends its `$TERM` value via `TerminalInfo` on first connect; the session defers PTY spawn until this arrives, so the remote shell gets the correct terminal type (falling back to `xterm-256color` if empty or invalid). The `bouncePTYSize()` trick shrinks the PTY by 1 row on reconnect so the client's real size always triggers a genuine `SIGWINCH`, forcing TUI redraw.
 
 ## Features Beyond Core Terminal
 

@@ -25,13 +25,15 @@ func main() {
 		runSession()
 	case hasFlag("--local"):
 		runClient()
-	case hasDestination():
-		runSSHClient()
 	default:
-		fmt.Fprintln(os.Stderr, "usage: goet [user@]host")
-		fmt.Fprintln(os.Stderr, "       goet --local -p <port> -k <passkey-hex> [host]")
-		fmt.Fprintln(os.Stderr, "       goet session -f <session-id> -p <port>")
-		os.Exit(1)
+		if dest := findDestination(); dest != "" {
+			runSSHClient(dest)
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: goet [user@]host")
+			fmt.Fprintln(os.Stderr, "       goet --local -p <port> -k <passkey-hex> [host]")
+			fmt.Fprintln(os.Stderr, "       goet session -f <session-id> -p <port>")
+			os.Exit(1)
+		}
 	}
 }
 
@@ -45,28 +47,19 @@ func hasFlag(name string) bool {
 	return false
 }
 
-// hasDestination checks if there's a non-flag argument that looks like a
-// destination (hostname or user@host). Skips known flags like --profile.
-func hasDestination() bool {
+// findDestination returns the first non-flag argument (hostname or user@host),
+// or "" if none found.
+func findDestination() string {
 	for _, arg := range os.Args[1:] {
 		if !strings.HasPrefix(arg, "-") {
-			return true
+			return arg
 		}
 	}
-	return false
+	return ""
 }
 
-func runSSHClient() {
+func runSSHClient(destination string) {
 	profile := hasFlag("--profile")
-
-	// First non-flag argument is the destination
-	var destination string
-	for _, arg := range os.Args[1:] {
-		if !strings.HasPrefix(arg, "-") {
-			destination = arg
-			break
-		}
-	}
 
 	res, err := client.SpawnSSH(destination)
 	if err != nil {
