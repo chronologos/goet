@@ -74,7 +74,6 @@ Max payload 4MB. See `internal/protocol/constants.go` for message types.
 
 ```
 github.com/quic-go/quic-go  # QUIC transport
-golang.org/x/sys             # Unix syscalls
 golang.org/x/term            # Terminal raw mode
 github.com/creack/pty        # PTY management
 ```

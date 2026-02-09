@@ -53,7 +53,7 @@
 
 ## Phase 7: Future Work
 - [ ] Idle timeout — configurable timeout to kill sessions when no client is connected, preventing zombie sessions
-- [ ] Structured logging — replace `log.Printf` with `log/slog` for leveled, structured output
+- [x] Structured logging — replace `log.Printf` with `log/slog` for leveled, structured output
 - [ ] UDP hole-punching / NAT traversal — QUIC supports this but goet currently assumes direct reachability; matters for mobile/roaming behind restrictive NATs
 - [ ] Port forwarding — TCP tunnel support (`-L` style), the biggest feature gap vs ET
 - [ ] Jump host / proxy support — connect through intermediate hosts

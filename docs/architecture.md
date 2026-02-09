@@ -1,4 +1,47 @@
-# Connection Lifecycle
+# Architecture
+
+## System Overview
+
+```mermaid
+graph TD
+    TERM[Terminal · raw mode]
+
+    subgraph CLIENT [CLIENT]
+        ESC[~. Escape Detector]
+        COAL_C[Coalescer · 2ms / 32KB]
+        BUF_C[Ring Buffer · 64MB]
+        ESC --> COAL_C --> BUF_C
+    end
+
+    subgraph TRANSPORT [QUIC over UDP · TLS 1.3]
+        CTRL[Stream 0 · Control]
+        DATA[Stream 1 · Data]
+        AUTH[HMAC-SHA256 Auth]
+    end
+
+    subgraph SESSION [SESSION]
+        ACCEPT[QUIC Listener · UDP]
+        COAL_S[Coalescer · 2ms / 32KB]
+        BUF_S[Ring Buffer · 64MB]
+        ACCEPT --> COAL_S --> BUF_S
+    end
+
+    PTY[PTY Master · xterm-256color]
+    SHELL[Login Shell]
+    SSH[SSH Bootstrap · ephemeral]
+
+    TERM -->|stdin / stdout| CLIENT
+    BUF_C -->|Data seq payload| DATA
+    DATA -->|Data seq payload| ACCEPT
+    BUF_S -->|read / write| PTY
+    PTY -->|fd| SHELL
+
+    TERM -.->|SIGWINCH| CTRL
+    CTRL -.->|Resize| PTY
+    SSH -.->|passkey + port| SESSION
+```
+
+## Connection Lifecycle
 
 How a goet connection is established, maintained, and torn down.
 

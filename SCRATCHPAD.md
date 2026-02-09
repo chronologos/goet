@@ -143,7 +143,7 @@ Timer starts on first byte in a batch and is NOT reset by subsequent adds. Under
 - **Client**: `coal` is local to `ioLoop` — fresh per connection. At most 2ms of unsent keystrokes lost on disconnect, same as typing during an outage.
 
 ### Flush ordering in handleNewConn
-Flush happens after `s.conn = newConn` but before catchup replay. This ensures coalesced PTY data is both stored in catchup AND sent to the new client, followed by proper replay of older data.
+Flush happens **before** `s.conn = newConn` (while `s.conn` is still nil), then catchup replay happens after. This ensures coalesced PTY data is stored in the catchup buffer without also being written to the new connection directly, which would cause duplicate delivery.
 
 ### Nil channel select trick
 `Timer()` returns nil when no deadline is active. Nil channels block forever in select, effectively disabling the case without any wrapper logic. Same pattern used by `time.After` internally.

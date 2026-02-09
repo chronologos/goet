@@ -6,7 +6,7 @@ Three projects solving the same problem — surviving network interruptions in r
 
 | | **goet** | **zet** | **EternalTerminal** |
 |---|---|---|---|
-| **Language** | Go (~4.2K LOC) | Zig (~8K LOC) | C++ (~11K LOC) |
+| **Language** | Go (~2.5K LOC) | Zig (~8K LOC) | C++ (~11K LOC) |
 | **Transport** | QUIC (UDP) + TLS 1.3 | TCP + app-level encryption | TCP + app-level encryption |
 | **Process model** | 2-process (client + session) | 3-process (client + broker + session) | 3-process (et + etserver + etterminal) |
 | **Encryption** | TLS 1.3 (via QUIC) | XChaCha20-Poly1305 + BLAKE3 KDF | XSalsa20-Poly1305 (libsodium) |
@@ -25,7 +25,7 @@ The most consequential architectural divergence.
 
 ### goet: QUIC
 
-- **Connection migration** — survives IP changes (WiFi -> cellular) without reconnecting at the application layer
+- **Fast reconnect** — 1-RTT QUIC handshake (vs 2-RTT TCP+TLS) on IP changes; true connection migration not yet enabled in quic-go
 - **Built-in TLS 1.3** — no need for application-level encryption
 - **Stream multiplexing** — control (stream 0) and data (stream 1) are independent, preventing head-of-line blocking between heartbeats and terminal data
 - **MTU tuning** — initial packet size set to 1200 (Tailscale compatibility; default 1350 gets dropped)
@@ -192,7 +192,7 @@ goet likely wins — write coalescing batches many small PTY reads into fewer, l
 | | QUIC (goet) | TCP (zet, ET) |
 |---|---|---|
 | Connection setup | 1 RTT (faster) | 2 RTTs |
-| Reconnect after IP change | 0 RTT (migration) | Full reconnect (~3 RTTs) |
+| Reconnect after IP change | 1 RTT (app-level reconnect) | Full reconnect (~3 RTTs) |
 | Head-of-line blocking | None (independent streams) | Yes (all data ordered) |
 | Raw throughput | Lower (userspace, Go scheduler) | Higher (kernel, HW offload) |
 | Per-packet CPU | Higher (userspace TLS) | Lower (kTLS, NIC offload) |

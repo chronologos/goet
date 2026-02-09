@@ -6,7 +6,7 @@ The remote host must have `goet` installed. SSH is used only to bootstrap the se
 
 ## Why QUIC?
 
-- **Connection migration** — survives WiFi→cellular IP changes transparently
+- **Fast reconnect** — 1-RTT QUIC handshake vs 2-RTT TCP+TLS on network changes
 - **TLS 1.3 built in** — no application-level crypto needed
 - **Multiplexed streams** — resize/heartbeat never blocked behind bulk data
 - **No broker needed** — each session listens on its own UDP port
@@ -20,14 +20,14 @@ Client ←─QUIC/UDP─→ goet session (direct, multiplexed streams)
 ```
 
 Two QUIC streams:
-- **Stream 0 (Control)**: Auth, TerminalInfo, resize, heartbeat, shutdown, sequence headers
-- **Stream 1 (Data)**: Terminal stdin/stdout with sequence numbers for catchup
+- **Stream 0 (Control)**: Auth, TerminalInfo, resize, heartbeat, shutdown, session→client sequence header
+- **Stream 1 (Data)**: Terminal stdin/stdout with sequence numbers, client→session sequence header
 
 On first connect, the client sends `TerminalInfo` with its `$TERM` value. The session defers PTY spawn until this arrives, so the remote shell gets the correct terminal type.
 
 Write coalescing batches small writes into fewer, larger Data messages (2ms deadline, 32KB threshold) to reduce per-message overhead during fast output.
 
-See [docs/connection-sequence.md](docs/connection-sequence.md) for a detailed sequence diagram of the full connection lifecycle.
+See [docs/architecture.md](docs/architecture.md) for detailed diagrams of the system topology and full connection lifecycle.
 
 ## Usage
 
@@ -54,6 +54,32 @@ goet --local -p <PORT> -k "$PASSKEY"
 # ~. to disconnect
 ```
 
+## UDP Buffer Sizes
+
+QUIC requires larger UDP buffers than most OS defaults. If you see:
+
+```
+failed to sufficiently increase receive buffer size (was: 208 kiB, wanted: 7168 kiB, got: 416 kiB)
+```
+
+Note: in SSH mode, this warning comes from the **remote** machine (the session's stderr is forwarded via SSH), not your local machine.
+
+**Linux** (on the remote host):
+
+```bash
+sudo sysctl -w net.core.rmem_max=26214400
+sudo sysctl -w net.core.wmem_max=26214400
+
+# Persist across reboots
+printf 'net.core.rmem_max=26214400\nnet.core.wmem_max=26214400\n' | sudo tee /etc/sysctl.d/quic-buffers.conf
+```
+
+**macOS**:
+
+```bash
+sudo sysctl -w kern.ipc.maxsockbuf=26214400
+```
+
 ## Building
 
 ```bash
@@ -77,4 +103,4 @@ go test -fuzz='^FuzzEscapeProcess$' -fuzztime=30s ./internal/client/
 
 Core implementation complete (Phases 1–6). See [BACKLOG.md](BACKLOG.md) for future work.
 
-See [COMPARISON.md](COMPARISON.md) for an architectural comparison with [zet](https://github.com/ianwremmel/zet) and [EternalTerminal](https://github.com/MystenLabs/EternalTerminal).
+See [COMPARISON.md](COMPARISON.md) for an architectural comparison with [zet](https://github.com/chronologos/zet) and [EternalTerminal](https://github.com/MisterTea/EternalTerminal).
