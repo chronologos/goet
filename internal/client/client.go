@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,6 +17,15 @@ import (
 	"github.com/chronologos/goet/internal/protocol"
 	"github.com/chronologos/goet/internal/transport"
 )
+
+// discardHandler is a no-op slog handler that discards all log records.
+// Used when --profile is off to suppress client logging with zero overhead.
+type discardHandler struct{}
+
+func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
+func (discardHandler) Handle(context.Context, slog.Record) error { return nil }
+func (d discardHandler) WithAttrs([]slog.Attr) slog.Handler      { return d }
+func (d discardHandler) WithGroup(string) slog.Handler            { return d }
 
 const (
 	stdinBufSize      = 32 * 1024 // 32 KB per stdin read
@@ -38,6 +47,7 @@ type Config struct {
 // escape sequence, and reconnects with catchup replay on network failures.
 type Client struct {
 	cfg          Config
+	log          *slog.Logger
 	buf          *catchup.Buffer
 	escape       *EscapeProcessor
 	sendSeq      uint64
@@ -57,8 +67,15 @@ func New(cfg Config) *Client {
 	if !term.IsTerminal(fd) {
 		fd = -1
 	}
+	var logger *slog.Logger
+	if cfg.Profile {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, nil)).With("component", "client")
+	} else {
+		logger = slog.New(&discardHandler{})
+	}
 	return &Client{
 		cfg:     cfg,
+		log:     logger,
 		buf:     catchup.New(0),
 		escape:  NewEscapeProcessor(),
 		stdin:   os.Stdin,
@@ -73,6 +90,7 @@ func New(cfg Config) *Client {
 func newTestClient(cfg Config, stdin io.Reader, stdout, stderr io.Writer) *Client {
 	return &Client{
 		cfg:     cfg,
+		log:     slog.New(&discardHandler{}),
 		buf:     catchup.New(0),
 		escape:  NewEscapeProcessor(),
 		stdin:   stdin,
@@ -107,7 +125,7 @@ func (c *Client) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			log.Printf("client: connect failed: %v, retrying in %v", err, reconnectDelay)
+			c.log.Warn("connect failed, retrying", "err", err, "delay", reconnectDelay)
 			select {
 			case <-time.After(reconnectDelay):
 				continue
@@ -121,7 +139,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		if err := c.handleSequenceExchange(conn); err != nil {
-			log.Printf("client: sequence exchange failed: %v, retrying", err)
+			c.log.Warn("sequence exchange failed, retrying", "err", err)
 			conn.Close()
 			select {
 			case <-time.After(reconnectDelay):
@@ -132,7 +150,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		if err := c.sendTerminalInfo(conn); err != nil {
-			log.Printf("client: send terminal info failed: %v, retrying", err)
+			c.log.Warn("send terminal info failed, retrying", "err", err)
 			conn.Close()
 			select {
 			case <-time.After(reconnectDelay):
@@ -168,7 +186,7 @@ func (c *Client) Run(ctx context.Context) error {
 		switch reason {
 		case exitNetwork:
 			conn.Close()
-			log.Printf("client: connection lost, reconnecting in %v", reconnectDelay)
+			c.log.Info("connection lost, reconnecting", "delay", reconnectDelay)
 			select {
 			case <-time.After(reconnectDelay):
 				continue
@@ -336,7 +354,7 @@ func (c *Client) ioLoop(ctx context.Context, conn *transport.Conn, stdinCh <-cha
 				return exitNetwork
 			}
 			if time.Since(lastRecv) > recvTimeout {
-				log.Printf("client: heartbeat timeout (%v since last recv)", time.Since(lastRecv))
+				c.log.Warn("heartbeat timeout", "since_last_recv", time.Since(lastRecv))
 				return exitNetwork
 			}
 			if c.cfg.Profile {

@@ -3,7 +3,6 @@ package client
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -102,13 +101,13 @@ func (c *Client) writeProfileJSON(conn *transport.Conn) {
 
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
-		log.Printf("profile: json marshal: %v", err)
+		c.log.Error("profile json marshal failed", "err", err)
 		return
 	}
 
 	filename := fmt.Sprintf("/tmp/goet-profile-%s.json", now.Format("20060102-150405"))
 	if err := os.WriteFile(filename, data, 0644); err != nil {
-		log.Printf("profile: write %s: %v", filename, err)
+		c.log.Error("profile write failed", "file", filename, "err", err)
 		return
 	}
 

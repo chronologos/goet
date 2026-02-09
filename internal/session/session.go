@@ -3,7 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"syscall"
@@ -44,6 +44,7 @@ type streamEvent struct {
 // catchup replay.
 type Session struct {
 	cfg     Config
+	log     *slog.Logger
 	ptmx    *os.File
 	cmd     *exec.Cmd
 	ln      *transport.Listener
@@ -68,6 +69,7 @@ type Session struct {
 func New(cfg Config) *Session {
 	return &Session{
 		cfg:   cfg,
+		log:   slog.New(slog.NewTextHandler(os.Stderr, nil)).With("component", "session"),
 		buf:   catchup.New(0), // default 64 MB
 		Ready: make(chan struct{}),
 	}
@@ -139,7 +141,7 @@ func (s *Session) Run(ctx context.Context) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				log.Printf("session: accept error: %v", res.err)
+				s.log.Warn("accept error", "err", res.err)
 			} else {
 				if err := s.handleNewConn(res.conn, streamCh); err != nil {
 					return fmt.Errorf("handle new conn: %w", err)
@@ -158,7 +160,7 @@ func (s *Session) Run(ctx context.Context) error {
 				if err := s.conn.WriteControl(&protocol.Heartbeat{
 					TimestampMs: time.Now().UnixMilli(),
 				}); err != nil {
-					log.Printf("session: heartbeat write: %v", err)
+					s.log.Warn("heartbeat write failed", "err", err)
 					s.closeConn()
 				}
 			}
@@ -268,7 +270,7 @@ func (s *Session) handleStreamEvent(ev streamEvent) error {
 	}
 
 	if ev.err != nil {
-		log.Printf("session: %s stream error: %v", ev.stream, ev.err)
+		s.log.Info("stream closed", "stream", ev.stream, "err", ev.err)
 		s.closeConn()
 		return nil
 	}
@@ -277,14 +279,14 @@ func (s *Session) handleStreamEvent(ev streamEvent) error {
 	case *protocol.Resize:
 		if s.ptmx != nil {
 			if err := resizePTY(s.ptmx, msg.Rows, msg.Cols); err != nil {
-				log.Printf("session: resize PTY: %v", err)
+				s.log.Warn("resize pty failed", "err", err)
 			}
 		}
 	case *protocol.Data:
 		s.recvSeq = msg.Seq
 		if s.ptmx != nil {
 			if _, err := s.ptmx.Write(msg.Payload); err != nil {
-				log.Printf("session: write to PTY: %v", err)
+				s.log.Warn("pty write failed", "err", err)
 			}
 		}
 	case *protocol.Heartbeat:
@@ -296,7 +298,7 @@ func (s *Session) handleStreamEvent(ev streamEvent) error {
 	case *protocol.TerminalInfo:
 		// Late TerminalInfo on reconnect — no-op (PTY already spawned)
 	default:
-		log.Printf("session: unknown message type: %T", ev.msg)
+		s.log.Warn("unknown message type", "type", fmt.Sprintf("%T", ev.msg))
 	}
 
 	return nil
@@ -324,7 +326,7 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	if err := s.conn.WriteControl(&protocol.SequenceHeader{
 		LastReceivedSeq: s.recvSeq,
 	}); err != nil {
-		log.Printf("session: write seq header: %v", err)
+		s.log.Warn("write seq header failed", "err", err)
 		s.closeConn()
 		return nil
 	}
@@ -335,13 +337,13 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	msg, err := s.conn.ReadControl()
 	s.conn.Control.SetReadDeadline(time.Time{})
 	if err != nil {
-		log.Printf("session: read terminal info: %v", err)
+		s.log.Warn("read terminal info failed", "err", err)
 		s.closeConn()
 		return nil
 	}
 	ti, ok := msg.(*protocol.TerminalInfo)
 	if !ok {
-		log.Printf("session: expected TerminalInfo, got %T", msg)
+		s.log.Warn("unexpected handshake message", "expected", "TerminalInfo", "got", fmt.Sprintf("%T", msg))
 		s.closeConn()
 		return nil
 	}
@@ -369,7 +371,7 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 			Seq:     e.Seq,
 			Payload: e.Payload,
 		}); err != nil {
-			log.Printf("session: catchup replay: %v", err)
+			s.log.Warn("catchup replay failed", "err", err)
 			s.closeConn()
 			return nil
 		}
@@ -378,7 +380,7 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	// Bounce PTY size: shrink by 1 row. Client will send its real size
 	// immediately, causing a genuine size change → SIGWINCH → TUI redraw.
 	if err := bouncePTYSize(s.ptmx); err != nil {
-		log.Printf("session: bounce PTY size: %v", err)
+		s.log.Warn("bounce pty size failed", "err", err)
 	}
 
 	// Start reader goroutines for the new connection
@@ -413,7 +415,7 @@ func (s *Session) flushCoalesced() {
 			Seq:     s.sendSeq,
 			Payload: data,
 		}); err != nil {
-			log.Printf("session: write coalesced to client: %v", err)
+			s.log.Warn("write coalesced failed", "err", err)
 			s.closeConn()
 		}
 	}
