@@ -17,12 +17,22 @@ Not in PATH by default — use full path or add to shell config.
 ./tests/e2e_ssh_test.sh                    # SSH E2E (requires SSH key auth to localhost)
 
 # Fuzz tests (use ^ and $ for exact match when names share prefix)
+# Crash-finding (no-panic on malformed input)
 /usr/local/go/bin/go test -fuzz=FuzzReadMessage -fuzztime=30s ./internal/protocol/
 /usr/local/go/bin/go test -fuzz='^FuzzEscapeProcess$' -fuzztime=30s ./internal/client/
 /usr/local/go/bin/go test -fuzz='^FuzzEscapeProcessMultiCall$' -fuzztime=30s ./internal/client/
 /usr/local/go/bin/go test -fuzz='^FuzzParseDestination$' -fuzztime=30s ./internal/client/
 /usr/local/go/bin/go test -fuzz='^FuzzBufferStoreReplay$' -fuzztime=30s ./internal/catchup/
 /usr/local/go/bin/go test -fuzz='^FuzzBufferEviction$' -fuzztime=30s ./internal/catchup/
+# Round-trip / invariant (encode→decode equality, data integrity)
+/usr/local/go/bin/go test -fuzz='^FuzzRoundTripData$' -fuzztime=30s ./internal/protocol/
+/usr/local/go/bin/go test -fuzz='^FuzzRoundTripHeartbeat$' -fuzztime=30s ./internal/protocol/
+/usr/local/go/bin/go test -fuzz='^FuzzRoundTripResize$' -fuzztime=30s ./internal/protocol/
+/usr/local/go/bin/go test -fuzz='^FuzzRoundTripSequenceHeader$' -fuzztime=30s ./internal/protocol/
+/usr/local/go/bin/go test -fuzz='^FuzzRoundTripTerminalInfo$' -fuzztime=30s ./internal/protocol/
+/usr/local/go/bin/go test -fuzz='^FuzzRoundTripAuthRequest$' -fuzztime=30s ./internal/protocol/
+/usr/local/go/bin/go test -fuzz='^FuzzBufferDataIntegrity$' -fuzztime=30s ./internal/catchup/
+/usr/local/go/bin/go test -fuzz='^FuzzCoalescerDataIntegrity$' -fuzztime=30s ./internal/coalesce/
 ```
 
 ## Local Development Testing

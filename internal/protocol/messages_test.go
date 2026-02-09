@@ -307,3 +307,146 @@ func FuzzReadMessage(f *testing.F) {
 		ReadMessage(bytes.NewReader(data))
 	})
 }
+
+// --- Round-trip fuzz tests ---
+// These generate random *valid* message fields, encode with WriteMessage,
+// decode with ReadMessage, and verify the result matches the original.
+// Much higher value than crash-only fuzzing: catches endianness bugs, field
+// transposition, off-by-one in length prefixes, etc.
+
+func FuzzRoundTripHeartbeat(f *testing.F) {
+	f.Add(int64(0))
+	f.Add(int64(1706745600000))
+	f.Add(int64(-1))
+	f.Fuzz(func(t *testing.T, ts int64) {
+		original := &Heartbeat{TimestampMs: ts}
+		var buf bytes.Buffer
+		if err := WriteMessage(&buf, original); err != nil {
+			t.Fatal(err)
+		}
+		msg, err := ReadMessage(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := msg.(*Heartbeat)
+		if decoded.TimestampMs != original.TimestampMs {
+			t.Fatalf("timestamp mismatch: got %d, want %d", decoded.TimestampMs, original.TimestampMs)
+		}
+	})
+}
+
+func FuzzRoundTripResize(f *testing.F) {
+	f.Add(uint16(24), uint16(80))
+	f.Add(uint16(0), uint16(0))
+	f.Add(uint16(65535), uint16(65535))
+	f.Fuzz(func(t *testing.T, rows, cols uint16) {
+		original := &Resize{Rows: rows, Cols: cols}
+		var buf bytes.Buffer
+		if err := WriteMessage(&buf, original); err != nil {
+			t.Fatal(err)
+		}
+		msg, err := ReadMessage(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := msg.(*Resize)
+		if decoded.Rows != original.Rows || decoded.Cols != original.Cols {
+			t.Fatalf("resize mismatch: got %dx%d, want %dx%d",
+				decoded.Rows, decoded.Cols, original.Rows, original.Cols)
+		}
+	})
+}
+
+func FuzzRoundTripSequenceHeader(f *testing.F) {
+	f.Add(uint64(0))
+	f.Add(uint64(1<<64 - 1))
+	f.Fuzz(func(t *testing.T, seq uint64) {
+		original := &SequenceHeader{LastReceivedSeq: seq}
+		var buf bytes.Buffer
+		if err := WriteMessage(&buf, original); err != nil {
+			t.Fatal(err)
+		}
+		msg, err := ReadMessage(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := msg.(*SequenceHeader)
+		if decoded.LastReceivedSeq != original.LastReceivedSeq {
+			t.Fatalf("seq mismatch: got %d, want %d", decoded.LastReceivedSeq, original.LastReceivedSeq)
+		}
+	})
+}
+
+func FuzzRoundTripData(f *testing.F) {
+	f.Add(uint64(1), []byte("hello"))
+	f.Add(uint64(0), []byte{})
+	f.Add(uint64(1<<64-1), []byte{0, 1, 2, 3})
+	f.Fuzz(func(t *testing.T, seq uint64, payload []byte) {
+		if len(payload) > 64*1024 { // cap to keep fuzz fast
+			payload = payload[:64*1024]
+		}
+		original := &Data{Seq: seq, Payload: payload}
+		var buf bytes.Buffer
+		if err := WriteMessage(&buf, original); err != nil {
+			t.Fatal(err)
+		}
+		msg, err := ReadMessage(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := msg.(*Data)
+		if decoded.Seq != original.Seq {
+			t.Fatalf("seq mismatch: got %d, want %d", decoded.Seq, original.Seq)
+		}
+		if !bytes.Equal(decoded.Payload, original.Payload) {
+			t.Fatalf("payload mismatch: got %d bytes, want %d bytes", len(decoded.Payload), len(original.Payload))
+		}
+	})
+}
+
+func FuzzRoundTripTerminalInfo(f *testing.F) {
+	f.Add("xterm-256color")
+	f.Add("")
+	f.Add("alacritty")
+	f.Fuzz(func(t *testing.T, term string) {
+		if len(term) > 65535 { // TerminalInfo uses uint16 length prefix
+			term = term[:65535]
+		}
+		original := &TerminalInfo{Term: term}
+		var buf bytes.Buffer
+		if err := WriteMessage(&buf, original); err != nil {
+			t.Fatal(err)
+		}
+		msg, err := ReadMessage(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := msg.(*TerminalInfo)
+		if decoded.Term != original.Term {
+			t.Fatalf("term mismatch: got %q, want %q", decoded.Term, original.Term)
+		}
+	})
+}
+
+func FuzzRoundTripAuthRequest(f *testing.F) {
+	f.Add(make([]byte, 32))
+	f.Fuzz(func(t *testing.T, token []byte) {
+		if len(token) < 32 {
+			return // need exactly 32 bytes for Token field
+		}
+		original := &AuthRequest{}
+		copy(original.Token[:], token[:32])
+		var buf bytes.Buffer
+		if err := WriteMessage(&buf, original); err != nil {
+			t.Fatal(err)
+		}
+		msg, err := ReadMessage(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := msg.(*AuthRequest)
+		if decoded.Token != original.Token {
+			t.Fatal("token mismatch")
+		}
+	})
+}

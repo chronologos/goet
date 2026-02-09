@@ -162,3 +162,62 @@ func TestTimerNilWhenEmpty(t *testing.T) {
 		t.Fatal("timer should be nil when no data buffered")
 	}
 }
+
+// --- Fuzz tests ---
+
+// FuzzCoalescerDataIntegrity adds random chunks in random-sized batches,
+// flushing periodically, and verifies the concatenation of all flushed data
+// equals the concatenation of all added data. This catches any data loss,
+// corruption, or reordering in the Add/Flush cycle.
+func FuzzCoalescerDataIntegrity(f *testing.F) {
+	f.Add([]byte("hello world"), 3, 5)
+	f.Add([]byte{}, 1, 1)
+	f.Add([]byte("abcdefghij"), 2, 4)
+	f.Fuzz(func(t *testing.T, data []byte, nChunks int, flushEvery int) {
+		if nChunks < 0 {
+			nChunks = -nChunks
+		}
+		nChunks = nChunks%20 + 1 // 1..20 chunks
+		if flushEvery < 0 {
+			flushEvery = -flushEvery
+		}
+		flushEvery = flushEvery%5 + 1 // flush every 1..5 adds
+
+		c := New()
+		defer c.Stop()
+
+		var allInput []byte
+		var allOutput []byte
+
+		// Split data into nChunks roughly-equal pieces and add them
+		for i := 0; i < nChunks; i++ {
+			start := len(data) * i / nChunks
+			end := len(data) * (i + 1) / nChunks
+			chunk := data[start:end]
+
+			allInput = append(allInput, chunk...)
+			c.Add(chunk)
+
+			if (i+1)%flushEvery == 0 {
+				if flushed := c.Flush(); flushed != nil {
+					allOutput = append(allOutput, flushed...)
+				}
+			}
+		}
+
+		// Final flush
+		if flushed := c.Flush(); flushed != nil {
+			allOutput = append(allOutput, flushed...)
+		}
+
+		// Core invariant: no data lost, no data corrupted
+		if len(allInput) != len(allOutput) {
+			t.Fatalf("length mismatch: input %d bytes, output %d bytes", len(allInput), len(allOutput))
+		}
+		for i := range allInput {
+			if allInput[i] != allOutput[i] {
+				t.Fatalf("byte mismatch at offset %d: input 0x%02x, output 0x%02x", i, allInput[i], allOutput[i])
+			}
+		}
+	})
+}

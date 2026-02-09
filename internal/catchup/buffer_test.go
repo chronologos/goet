@@ -276,6 +276,57 @@ func FuzzBufferStoreReplay(f *testing.F) {
 	})
 }
 
+// FuzzBufferDataIntegrity stores entries with unique payloads, then verifies
+// that replayed data exactly matches what was stored (for non-evicted entries).
+// Catches corruption in the copy-on-store path and ring wraparound logic.
+func FuzzBufferDataIntegrity(f *testing.F) {
+	f.Add(5, []byte("payload"), 3)
+	f.Add(1, []byte{}, 0)
+	f.Add(50, []byte("x"), 25)
+	f.Fuzz(func(t *testing.T, n int, base []byte, replaySkip int) {
+		if n < 0 {
+			n = -n
+		}
+		n = n%100 + 1 // 1..100 entries
+
+		if replaySkip < 0 {
+			replaySkip = -replaySkip
+		}
+		replaySkip = replaySkip % n
+
+		buf := New(4096) // big enough to hold small payloads without eviction
+
+		// Store entries with unique payloads: base + seq suffix
+		type stored struct {
+			seq     uint64
+			payload []byte
+		}
+		var all []stored
+		for i := 0; i < n; i++ {
+			seq := uint64(i + 1)
+			p := append(base, fmt.Sprintf("-%d", seq)...)
+			cp := make([]byte, len(p))
+			copy(cp, p)
+			buf.Store(seq, p)
+			all = append(all, stored{seq: seq, payload: cp})
+		}
+
+		// Replay and verify data integrity
+		entries := buf.ReplaySince(uint64(replaySkip))
+		for _, e := range entries {
+			// Find the matching stored entry
+			idx := int(e.Seq) - 1
+			if idx < 0 || idx >= len(all) {
+				t.Fatalf("replayed seq %d out of stored range", e.Seq)
+			}
+			if !bytes.Equal(e.Payload, all[idx].payload) {
+				t.Fatalf("seq %d payload mismatch: got %q, want %q",
+					e.Seq, e.Payload, all[idx].payload)
+			}
+		}
+	})
+}
+
 // FuzzBufferEviction fills the buffer beyond capacity with fuzzed payloads,
 // checking that invariants hold after eviction.
 func FuzzBufferEviction(f *testing.F) {
