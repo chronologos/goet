@@ -30,9 +30,13 @@ func main() {
 		if dest := findDestination(); dest != "" {
 			runSSHClient(dest)
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: goet [user@]host")
+			fmt.Fprintln(os.Stderr, "usage: goet [--install] [user@]host")
 			fmt.Fprintln(os.Stderr, "       goet --local -p <port> -k <passkey-hex> [host]")
 			fmt.Fprintln(os.Stderr, "       goet session -f <session-id> -p <port>")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "flags:")
+			fmt.Fprintln(os.Stderr, "  --install   install goet on remote if missing")
+			fmt.Fprintln(os.Stderr, "  --profile   emit RTT/traffic stats to stderr")
 			os.Exit(1)
 		}
 	}
@@ -56,8 +60,9 @@ func findDestination() string {
 
 func runSSHClient(destination string) {
 	profile := hasFlag("--profile")
+	install := hasFlag("--install")
 
-	res, err := client.SpawnSSH(destination)
+	res, err := client.SpawnSSH(destination, install)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ssh: %v\n", err)
 		os.Exit(1)
@@ -77,12 +82,11 @@ func runClient() {
 	fs := flag.NewFlagSet("client", flag.ExitOnError)
 	port := fs.Int("p", 0, "UDP port to connect to (required)")
 	passkeyHex := fs.String("k", "", "hex-encoded passkey (required)")
-	_ = fs.Bool("local", false, "direct mode (skip SSH)")
 
-	// Filter out --local and --profile (flag package expects single-dash)
+	// Strip double-dash flags before parsing (flag package only supports single-dash).
 	var args []string
 	for _, arg := range os.Args[1:] {
-		if arg == "--local" || arg == "--profile" {
+		if arg == "--local" || arg == "--profile" || arg == "--install" {
 			continue
 		}
 		args = append(args, arg)

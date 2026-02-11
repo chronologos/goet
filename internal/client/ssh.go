@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -24,15 +25,61 @@ type SSHResult struct {
 	Passkey []byte
 }
 
+// sshArgs builds the common SSH argument prefix: [-l user] -o BatchMode=yes host.
+func sshArgs(user, host string) []string {
+	var args []string
+	if user != "" {
+		args = append(args, "-l", user)
+	}
+	return append(args, "-o", "BatchMode=yes", host)
+}
+
 // SpawnSSH launches an SSH process to start a goet session on the remote host.
-// It generates a random passkey and session ID, sends the passkey via SSH's
-// stdin, and reads the port number from SSH's stdout. The SSH process is killed
-// once the port is obtained — all subsequent I/O flows over QUIC.
+// It generates a random passkey, sends it via SSH stdin, and reads the QUIC
+// port from SSH stdout. The SSH process is killed once the port is obtained —
+// all subsequent I/O flows over QUIC.
 //
-// The remote host must have goet in its PATH.
-func SpawnSSH(destination string) (*SSHResult, error) {
+// If install is true and goet is not found on the remote, it installs goet
+// automatically and retries with the absolute path ~/.local/bin/goet.
+func SpawnSSH(destination string, install bool) (*SSHResult, error) {
 	user, host := parseDestination(destination)
 
+	// First attempt: try with "goet" in PATH
+	res, err := spawnSSH(user, host, "goet")
+	if err == nil {
+		return res, nil
+	}
+
+	// If the error isn't "not installed", return as-is
+	if !isNotInstalledError(err) {
+		return nil, err
+	}
+
+	// goet is not installed on remote
+	if !install {
+		return nil, fmt.Errorf("goet is not installed on %s\n  Run: goet --install %s", host, destination)
+	}
+
+	// Install and retry
+	slog.Info("goet not found on remote, installing...", "host", host)
+	if err := installRemote(user, host); err != nil {
+		return nil, fmt.Errorf("install goet on remote: %w", err)
+	}
+
+	slog.Info("retrying with absolute path", "path", remoteGoetPath)
+	res, err = spawnSSH(user, host, remoteGoetPath)
+	if err != nil {
+		return nil, fmt.Errorf("connect after install: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "note: goet was installed to %s on %s\n", remoteGoetPath, host)
+	fmt.Fprintf(os.Stderr, "      add ~/.local/bin to PATH for bare 'goet' invocations\n")
+	return res, nil
+}
+
+// spawnSSH launches an SSH process to start a goet session on the remote host
+// using the specified goet binary path.
+func spawnSSH(user, host, goetPath string) (*SSHResult, error) {
 	passkey, err := auth.GeneratePasskey()
 	if err != nil {
 		return nil, fmt.Errorf("generate passkey: %w", err)
@@ -40,14 +87,8 @@ func SpawnSSH(destination string) (*SSHResult, error) {
 
 	passkeyHex := hex.EncodeToString(passkey)
 
-	// Build SSH command: ssh [-l user] host goet session -f <id> -p 0
 	// No -t flag — PTY would corrupt the passkey/port protocol on stdin/stdout.
-	var args []string
-	if user != "" {
-		args = append(args, "-l", user)
-	}
-	// -o BatchMode=yes: fail fast if key auth isn't configured (don't prompt for password)
-	args = append(args, "-o", "BatchMode=yes", host, "goet", "session", "-f", "ssh", "-p", "0")
+	args := append(sshArgs(user, host), goetPath, "session", "-f", "ssh", "-p", "0")
 
 	cmd := exec.Command("ssh", args...)
 	cmd.Stderr = os.Stderr // SSH errors (host key, auth failures) visible to user
@@ -118,7 +159,7 @@ func readPort(stdout io.Reader) (int, error) {
 			ch <- result{err: fmt.Errorf("read ssh stdout: %w", err)}
 		} else {
 			// EOF without a line — SSH or session exited early
-			ch <- result{err: fmt.Errorf("ssh stdout closed before port received (goet may not be installed on remote)")}
+			ch <- result{err: fmt.Errorf("ssh stdout closed before port received: %w", errNotInstalled)}
 		}
 	}()
 

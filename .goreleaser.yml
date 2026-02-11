@@ -1,0 +1,30 @@
+version: 2
+
+builds:
+  - main: ./cmd/goet
+    binary: goet
+    ldflags:
+      - -s -w
+      - -X github.com/chronologos/goet/internal/version.Commit={{.ShortCommit}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+# Produce bare binaries (no tar/zip) so `--install` can download directly.
+archives:
+  - format: binary
+    name_template: "goet-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
