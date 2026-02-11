@@ -142,27 +142,25 @@ func TestConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Concurrent writers
-	for g := 0; g < 4; g++ {
+	for g := range 4 {
 		wg.Add(1)
 		go func(base uint64) {
 			defer wg.Done()
-			for i := uint64(0); i < 100; i++ {
-				buf.Store(base+i, []byte(fmt.Sprintf("data-%d", base+i)))
+			for i := range uint64(100) {
+				buf.Store(base+i, fmt.Appendf(nil, "data-%d", base+i))
 			}
 		}(uint64(g) * 100)
 	}
 
 	// Concurrent readers
-	for g := 0; g < 4; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 100; i++ {
+	for range 4 {
+		wg.Go(func() {
+			for range 100 {
 				buf.ReplaySince(0)
 				buf.OldestSeq()
 				buf.NewestSeq()
 			}
-		}()
+		})
 	}
 
 	wg.Wait()

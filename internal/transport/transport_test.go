@@ -194,7 +194,7 @@ func TestConcurrentControlAndData(t *testing.T) {
 	done := make(chan error, 2)
 
 	go func() {
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := clientConn.WriteControl(&protocol.Heartbeat{
 				TimestampMs: int64(i),
 			}); err != nil {
@@ -206,7 +206,7 @@ func TestConcurrentControlAndData(t *testing.T) {
 	}()
 
 	go func() {
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := clientConn.WriteData(&protocol.Data{
 				Seq:     uint64(i),
 				Payload: []byte("data"),
@@ -218,14 +218,14 @@ func TestConcurrentControlAndData(t *testing.T) {
 		done <- nil
 	}()
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if err := <-done; err != nil {
 			t.Fatalf("send error: %v", err)
 		}
 	}
 
 	// Read all control messages
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		msg, err := serverConn.ReadControl()
 		if err != nil {
 			t.Fatalf("read control %d: %v", i, err)
@@ -237,7 +237,7 @@ func TestConcurrentControlAndData(t *testing.T) {
 	}
 
 	// Read all data messages
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		msg, err := serverConn.ReadData()
 		if err != nil {
 			t.Fatalf("read data %d: %v", i, err)

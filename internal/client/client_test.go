@@ -392,8 +392,7 @@ func TestProfileOutput(t *testing.T) {
 		Profile: true,
 	}
 	c := newTestClient(cfg, stdinR, stdoutW, &stderrBuf)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := make(chan error, 1)
 	go func() {

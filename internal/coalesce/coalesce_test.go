@@ -33,7 +33,7 @@ func TestThreshold(t *testing.T) {
 	defer c.Stop()
 
 	chunk := make([]byte, 1024)
-	for i := 0; i < Threshold/1024-1; i++ {
+	for range Threshold/1024 - 1 {
 		if c.Add(chunk) {
 			t.Fatal("should not hit threshold yet")
 		}

@@ -4,5 +4,10 @@
       "Bash(/usr/local/go/bin/go build:*)",
       "Bash(/usr/local/go/bin/go test:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "anki",
+    "qmd"
+  ],
+  "enableAllProjectMcpServers": true
 }

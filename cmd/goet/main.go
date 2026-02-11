@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -39,12 +40,7 @@ func main() {
 
 // hasFlag checks if a flag is present in os.Args.
 func hasFlag(name string) bool {
-	for _, arg := range os.Args[1:] {
-		if arg == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(os.Args[1:], name)
 }
 
 // findDestination returns the first non-flag argument (hostname or user@host),
