@@ -42,6 +42,9 @@ Not in PATH by default — use full path or add to shell config.
 ./goet user@host
 # ~. to disconnect
 
+# Auto-install on remote if missing, then connect
+./goet --install user@host
+
 # With RTT profiling (stats to stderr every 5s + summary on exit)
 ./goet --profile user@host
 
@@ -66,6 +69,7 @@ echo "$PASSKEY" | ./goet session -f test -p 0
 - **Write coalescing** — 2ms deadline timer + 32KB threshold batches small writes into fewer Data messages (`internal/coalesce/`)
 - **`~.` escape** detection via 3-state machine in client
 - **SSH bootstrapping**: `goet user@host` spawns SSH to launch remote session, then QUIC for data
+- **Auto-install**: `goet --install user@host` installs goet on remote if missing (self-transfer or GitHub release)
 
 ## Protocol
 

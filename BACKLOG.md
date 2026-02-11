@@ -51,7 +51,13 @@
 - [x] Signal handling edge cases (graceful Shutdown on ctx cancel)
 - [x] PTY cleanup on crash (SIGHUP via ptmx.Close, 2s grace, SIGKILL fallback)
 
-## Phase 7: Future Work
+## Phase 7: Auto-Install + Releases ✅
+- [x] `--install` flag — auto-install goet on remote via SSH (same-arch self-transfer, cross-arch GitHub release download)
+- [x] Improved error message when goet is missing (suggests `--install`)
+- [x] Version-driven release workflow — bump `VERSION`, push to main, auto-tag + goreleaser
+- [x] Cross-platform release binaries — `goet-{os}-{arch}` for linux/darwin × amd64/arm64
+
+## Phase 8: Future Work
 - [ ] Idle timeout — configurable timeout to kill sessions when no client is connected, preventing zombie sessions
 - [x] Structured logging — replace `log.Printf` with `log/slog` for leveled, structured output
 - [ ] UDP hole-punching / NAT traversal — QUIC supports this but goet currently assumes direct reachability; matters for mobile/roaming behind restrictive NATs

@@ -2,7 +2,7 @@
 
 A reconnectable remote terminal built in Go with QUIC transport. Inspired by [Eternal Terminal](https://github.com/MystenLabs/EternalTerminal) but redesigned from scratch — fewer processes, fewer dependencies, and QUIC instead of TCP.
 
-The remote host must have `goet` installed. SSH is used only to bootstrap the session; all terminal I/O flows over QUIC/UDP. For scrollback and window management, use a terminal multiplexer like [tmux](https://github.com/tmux/tmux).
+SSH is used only to bootstrap the session; all terminal I/O flows over QUIC/UDP. For scrollback and window management, use a terminal multiplexer like [tmux](https://github.com/tmux/tmux).
 
 ## Why QUIC?
 
@@ -36,9 +36,21 @@ See [docs/architecture.md](docs/architecture.md) for detailed diagrams of the sy
 goet user@host
 # ~. to disconnect
 
+# Auto-install on remote if missing, then connect
+goet --install user@host
+
 # With RTT profiling (stats to stderr every 5s + summary on exit)
 goet --profile user@host
 ```
+
+### Remote Installation
+
+`--install` automatically installs goet on the remote host if it's not found:
+
+- **Same architecture** (e.g., mac-arm64 → mac-arm64): transfers the local binary directly
+- **Cross-architecture** (e.g., mac-arm64 → linux-amd64): downloads the matching binary from [GitHub releases](https://github.com/chronologos/goet/releases)
+
+The binary is installed to `~/.local/bin/goet` on the remote. If `~/.local/bin` isn't in the remote PATH, goet uses the absolute path automatically and prints a reminder to update PATH.
 
 ## Direct Mode (for development)
 
