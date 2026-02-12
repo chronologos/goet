@@ -88,6 +88,16 @@ Max payload 4MB. See `internal/protocol/constants.go` for message types.
 - Tests colocated with source (`_test.go`)
 - Fuzz tests for decoders, escape processor, parseDestination, catchup buffer
 
+## Releasing
+
+1. Update `VERSION` file with new semver (e.g. `0.3.0`)
+2. Push to main
+3. Tag: `git tag v$(cat VERSION) && git push origin v$(cat VERSION)`
+4. GoReleaser builds binaries automatically from the tag
+
+The `VERSION` file, git tag, and goreleaser `{{.Version}}` must stay in sync.
+`version.VERSION` and `version.Commit` are set via `-ldflags` at build time.
+
 ## Dependencies
 
 ```
