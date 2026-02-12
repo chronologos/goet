@@ -36,21 +36,37 @@ See [docs/architecture.md](docs/architecture.md) for detailed diagrams of the sy
 goet user@host
 # ~. to disconnect
 
-# Auto-install on remote if missing, then connect
+# Auto-install (or upgrade) goet on remote, then connect
 goet --install user@host
+
+# Use TCP+TLS instead of QUIC (for networks that block UDP)
+goet --tcp user@host
+
+# Check version
+goet --version
 
 # With RTT profiling (stats to stderr every 5s + summary on exit)
 goet --profile user@host
 ```
 
-### Remote Installation
+### Remote Installation & Upgrade
 
-`--install` automatically installs goet on the remote host if it's not found:
+`--install` ensures the remote host has the same version of goet as your local binary:
+
+- **Not installed**: installs goet on the remote
+- **Outdated** (different commit hash): upgrades the remote binary automatically
+- **Up to date**: connects without reinstalling
+
+For installation, the transfer method depends on architecture:
 
 - **Same architecture** (e.g., mac-arm64 → mac-arm64): transfers the local binary directly
 - **Cross-architecture** (e.g., mac-arm64 → linux-amd64): downloads the matching binary from [GitHub releases](https://github.com/chronologos/goet/releases)
 
 The binary is installed to `~/.local/bin/goet` on the remote. If `~/.local/bin` isn't in the remote PATH, goet uses the absolute path automatically and prints a reminder to update PATH.
+
+### TCP Fallback
+
+By default, goet uses QUIC (over UDP). Some corporate networks or firewalls block UDP traffic. Pass `--tcp` to use TCP+TLS instead. The session always listens on both transports simultaneously, so this is purely a client-side choice.
 
 ## Direct Mode (for development)
 

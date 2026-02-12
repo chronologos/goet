@@ -56,6 +56,9 @@
 - [x] Improved error message when goet is missing (suggests `--install`)
 - [x] Version-driven release workflow — bump `VERSION`, push to main, auto-tag + goreleaser
 - [x] Cross-platform release binaries — `goet-{os}-{arch}` for linux/darwin × amd64/arm64
+- [x] TCP+TLS fallback transport — `--tcp` flag for networks that block UDP; session listens on both QUIC and TCP simultaneously
+- [x] `goet --version` / `goet version` — prints version tag and commit hash
+- [x] `--install` auto-upgrade — compares local vs remote commit hash, reinstalls on mismatch (handles both old and new version output formats)
 
 ## Phase 8: Future Work
 - [ ] Idle timeout — configurable timeout to kill sessions when no client is connected, preventing zombie sessions
