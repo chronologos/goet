@@ -178,3 +178,29 @@ func downloadRelease(goos, goarch string) (path string, cleanup func(), err erro
 func isNotInstalledError(err error) bool {
 	return errors.Is(err, errNotInstalled)
 }
+
+// getRemoteVersion runs `goet --version` on the remote and returns the commit hash.
+// Tries "goet" in PATH first, then the absolute install path.
+// Returns errNotInstalled if goet is not found at either location.
+func getRemoteVersion(user, host string) (string, error) {
+	out, err := sshRun(user, host, "goet --version")
+	if err == nil {
+		return parseVersionOutput(out)
+	}
+
+	// Try absolute path (may have been installed by --install but not in PATH)
+	out, err = sshRun(user, host, remoteGoetPath+" --version")
+	if err != nil {
+		return "", errNotInstalled
+	}
+	return parseVersionOutput(out)
+}
+
+// parseVersionOutput extracts the commit hash from "goet <commit>" output.
+func parseVersionOutput(output string) (string, error) {
+	fields := strings.Fields(output)
+	if len(fields) != 2 || fields[0] != "goet" {
+		return "", fmt.Errorf("unexpected version output: %q", output)
+	}
+	return fields[1], nil
+}

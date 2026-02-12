@@ -48,6 +48,44 @@ func TestParseUnameOutput(t *testing.T) {
 	}
 }
 
+func TestParseVersionOutput(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"goet abc1234", "abc1234", false},
+		{"goet dev", "dev", false},
+		{"goet 4bf4dab", "4bf4dab", false},
+
+		// Error cases
+		{"", "", true},
+		{"goet", "", true},           // missing commit
+		{"abc1234", "", true},         // missing prefix
+		{"goet a b", "", true},        // too many fields
+		{"notgoet abc1234", "", true},  // wrong prefix
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := parseVersionOutput(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("parseVersionOutput(%q) = %q, want error", tt.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("parseVersionOutput(%q) error: %v", tt.input, err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("parseVersionOutput(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsNotInstalledError(t *testing.T) {
 	tests := []struct {
 		err  error

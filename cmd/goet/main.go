@@ -16,9 +16,16 @@ import (
 	"github.com/chronologos/goet/internal/client"
 	"github.com/chronologos/goet/internal/session"
 	"github.com/chronologos/goet/internal/transport"
+	"github.com/chronologos/goet/internal/version"
 )
 
 func main() {
+	// Early flags that don't need dispatch.
+	if hasFlag("--version") || (len(os.Args) > 1 && os.Args[1] == "version") {
+		fmt.Printf("goet %s\n", version.Commit)
+		os.Exit(0)
+	}
+
 	// Dispatch based on argv[0] (symlink name) or subcommand.
 	base := filepath.Base(os.Args[0])
 
@@ -34,9 +41,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: goet [--install] [--tcp] [user@]host")
 			fmt.Fprintln(os.Stderr, "       goet --local -p <port> -k <passkey-hex> [host]")
 			fmt.Fprintln(os.Stderr, "       goet session -f <session-id> -p <port>")
+			fmt.Fprintln(os.Stderr, "       goet version")
 			fmt.Fprintln(os.Stderr, "")
 			fmt.Fprintln(os.Stderr, "flags:")
-			fmt.Fprintln(os.Stderr, "  --install   install goet on remote if missing")
+			fmt.Fprintln(os.Stderr, "  --version   print version and exit")
+			fmt.Fprintln(os.Stderr, "  --install   install or upgrade goet on remote")
 			fmt.Fprintln(os.Stderr, "  --tcp       use TCP+TLS transport instead of QUIC")
 			fmt.Fprintln(os.Stderr, "  --profile   emit RTT/traffic stats to stderr")
 			os.Exit(1)

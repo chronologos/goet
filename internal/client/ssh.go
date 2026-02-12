@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chronologos/goet/internal/auth"
+	"github.com/chronologos/goet/internal/version"
 )
 
 const sshTimeout = 10 * time.Second
@@ -39,41 +40,54 @@ func sshArgs(user, host string) []string {
 // port from SSH stdout. The SSH process is killed once the port is obtained —
 // all subsequent I/O flows over QUIC.
 //
-// If install is true and goet is not found on the remote, it installs goet
-// automatically and retries with the absolute path ~/.local/bin/goet.
+// If install is true, it checks the remote version first. If goet is missing
+// or outdated (commit mismatch), it installs/upgrades before spawning.
 func SpawnSSH(destination string, install bool) (*SSHResult, error) {
 	user, host := parseDestination(destination)
 
-	// First attempt: try with "goet" in PATH
+	if install {
+		return spawnWithInstall(user, host, destination)
+	}
+
+	// No --install: try goet in PATH, suggest --install on failure
 	res, err := spawnSSH(user, host, "goet")
-	if err == nil {
-		return res, nil
-	}
-
-	// If the error isn't "not installed", return as-is
-	if !isNotInstalledError(err) {
-		return nil, err
-	}
-
-	// goet is not installed on remote
-	if !install {
+	if err != nil && isNotInstalledError(err) {
 		return nil, fmt.Errorf("goet is not installed on %s\n  Run: goet --install %s", host, destination)
 	}
+	return res, err
+}
 
-	// Install and retry
-	slog.Info("goet not found on remote, installing...", "host", host)
-	if err := installRemote(user, host); err != nil {
-		return nil, fmt.Errorf("install goet on remote: %w", err)
+// spawnWithInstall checks the remote goet version and installs/upgrades if
+// needed before spawning the session.
+func spawnWithInstall(user, host, destination string) (*SSHResult, error) {
+	remoteVer, err := getRemoteVersion(user, host)
+
+	needsInstall := false
+	goetPath := "goet"
+
+	if err != nil {
+		slog.Info("goet not found on remote, installing...", "host", host)
+		needsInstall = true
+	} else if remoteVer != version.Commit {
+		slog.Info("upgrading goet on remote", "host", host, "remote", remoteVer, "local", version.Commit)
+		needsInstall = true
+	} else {
+		slog.Info("remote goet is up to date", "host", host, "version", remoteVer)
 	}
 
-	slog.Info("retrying with absolute path", "path", remoteGoetPath)
-	res, err = spawnSSH(user, host, remoteGoetPath)
+	if needsInstall {
+		if err := installRemote(user, host); err != nil {
+			return nil, fmt.Errorf("install goet on remote: %w", err)
+		}
+		goetPath = remoteGoetPath
+		fmt.Fprintf(os.Stderr, "note: goet was installed to %s on %s\n", remoteGoetPath, host)
+		fmt.Fprintf(os.Stderr, "      add ~/.local/bin to PATH for bare 'goet' invocations\n")
+	}
+
+	res, err := spawnSSH(user, host, goetPath)
 	if err != nil {
 		return nil, fmt.Errorf("connect after install: %w", err)
 	}
-
-	fmt.Fprintf(os.Stderr, "note: goet was installed to %s on %s\n", remoteGoetPath, host)
-	fmt.Fprintf(os.Stderr, "      add ~/.local/bin to PATH for bare 'goet' invocations\n")
 	return res, nil
 }
 
