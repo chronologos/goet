@@ -1,6 +1,9 @@
 package version
 
-// Commit is the git commit hash, set at build time via:
+// Version and Commit are set at build time via:
 //
-//	go build -ldflags "-X github.com/chronologos/goet/internal/version.Commit=abc123"
-var Commit = "dev"
+//	go build -ldflags "-X ...version.VERSION=0.4.0 -X ...version.Commit=abc123"
+var (
+	VERSION = "dev"
+	Commit  = "dev"
+)

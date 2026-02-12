@@ -1,6 +1,7 @@
 GO ?= go
+VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "dev")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
-LDFLAGS := -X github.com/chronologos/goet/internal/version.Commit=$(COMMIT)
+LDFLAGS := -X github.com/chronologos/goet/internal/version.VERSION=$(VERSION) -X github.com/chronologos/goet/internal/version.Commit=$(COMMIT)
 FUZZTIME ?= 30s
 
 .PHONY: build install test test-race test-e2e fuzz lint clean

@@ -22,7 +22,7 @@ import (
 func main() {
 	// Early flags that don't need dispatch.
 	if hasFlag("--version") || (len(os.Args) > 1 && os.Args[1] == "version") {
-		fmt.Printf("goet %s\n", version.Commit)
+		fmt.Printf("goet %s (%s)\n", version.VERSION, version.Commit)
 		os.Exit(0)
 	}
 

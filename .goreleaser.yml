@@ -5,6 +5,7 @@ builds:
     binary: goet
     ldflags:
       - -s -w
+      - -X github.com/chronologos/goet/internal/version.VERSION={{.Version}}
       - -X github.com/chronologos/goet/internal/version.Commit={{.ShortCommit}}
     goos:
       - linux

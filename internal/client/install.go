@@ -196,11 +196,20 @@ func getRemoteVersion(user, host string) (string, error) {
 	return parseVersionOutput(out)
 }
 
-// parseVersionOutput extracts the commit hash from "goet <commit>" output.
+// parseVersionOutput extracts the commit hash from version output.
+// Accepts both "goet <ver> (<commit>)" (new) and "goet <commit>" (old).
 func parseVersionOutput(output string) (string, error) {
 	fields := strings.Fields(output)
-	if len(fields) != 2 || fields[0] != "goet" {
+	if len(fields) < 2 || fields[0] != "goet" {
 		return "", fmt.Errorf("unexpected version output: %q", output)
 	}
-	return fields[1], nil
+	// New format: "goet 0.4.0 (abc1234)"
+	if len(fields) == 3 {
+		return strings.Trim(fields[2], "()"), nil
+	}
+	// Old format: "goet abc1234"
+	if len(fields) == 2 {
+		return fields[1], nil
+	}
+	return "", fmt.Errorf("unexpected version output: %q", output)
 }

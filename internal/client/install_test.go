@@ -54,16 +54,21 @@ func TestParseVersionOutput(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
+		// New format: "goet <version> (<commit>)"
+		{"goet 0.4.0 (abc1234)", "abc1234", false},
+		{"goet dev (4bf4dab)", "4bf4dab", false},
+
+		// Old format: "goet <commit>"
 		{"goet abc1234", "abc1234", false},
 		{"goet dev", "dev", false},
 		{"goet 4bf4dab", "4bf4dab", false},
 
 		// Error cases
 		{"", "", true},
-		{"goet", "", true},           // missing commit
-		{"abc1234", "", true},         // missing prefix
-		{"goet a b", "", true},        // too many fields
-		{"notgoet abc1234", "", true},  // wrong prefix
+		{"goet", "", true},                    // missing commit
+		{"abc1234", "", true},                 // missing prefix
+		{"goet a b c d", "", true},            // too many fields
+		{"notgoet abc1234", "", true},         // wrong prefix
 	}
 
 	for _, tt := range tests {
