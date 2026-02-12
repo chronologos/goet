@@ -59,11 +59,11 @@ func startTestSession(t *testing.T) (port int, passkey []byte, cleanup func()) {
 	}
 }
 
-func dialTestSession(t *testing.T, port int, passkey []byte) *transport.Conn {
+func dialTestSession(t *testing.T, port int, passkey []byte) transport.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := transport.Dial(ctx, "127.0.0.1", port, passkey, 0)
+	conn, err := transport.Dial(ctx, transport.DialQUIC, "127.0.0.1", port, passkey, 0)
 	if err != nil {
 		t.Fatalf("dial session: %v", err)
 	}
@@ -72,7 +72,7 @@ func dialTestSession(t *testing.T, port int, passkey []byte) *transport.Conn {
 
 // completeHandshake reads the SequenceHeader from the session and sends
 // TerminalInfo. Returns the SequenceHeader for tests that need it.
-func completeHandshake(t *testing.T, conn *transport.Conn) *protocol.SequenceHeader {
+func completeHandshake(t *testing.T, conn transport.Conn) *protocol.SequenceHeader {
 	t.Helper()
 	msg, err := conn.ReadControl()
 	if err != nil {
@@ -90,7 +90,7 @@ func completeHandshake(t *testing.T, conn *transport.Conn) *protocol.SequenceHea
 
 // readUntil reads data messages from the data stream until the output
 // contains substr, or the timeout expires.
-func readUntil(t *testing.T, conn *transport.Conn, substr string, timeout time.Duration) string {
+func readUntil(t *testing.T, conn transport.Conn, substr string, timeout time.Duration) string {
 	t.Helper()
 	var buf bytes.Buffer
 	deadline := time.After(timeout)
@@ -312,8 +312,13 @@ func TestUnknownMessageTypeNoCrash(t *testing.T) {
 	raw[0], raw[1], raw[2], raw[3] = 0, 0, 0, 2 // payload length = 2
 	raw[4] = 0xFF                                 // unknown type
 	raw[5], raw[6] = 0xAB, 0xCD                   // dummy payload
-	if _, err := conn1.Data.Write(raw[:]); err != nil {
-		t.Fatalf("write raw: %v", err)
+	type rawWriter interface{ WriteRawData([]byte) (int, error) }
+	if rw, ok := conn1.(rawWriter); ok {
+		if _, err := rw.WriteRawData(raw[:]); err != nil {
+			t.Fatalf("write raw: %v", err)
+		}
+	} else {
+		t.Fatal("conn does not support WriteRawData")
 	}
 
 	// The session should close this connection (readStream returns error).

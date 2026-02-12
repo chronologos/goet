@@ -13,11 +13,24 @@ import (
 	"github.com/chronologos/goet/internal/protocol"
 )
 
-// Dial connects to a session's QUIC listener, authenticates with the passkey,
-// and returns a Conn with control and data streams ready for use.
+// Dial connects to a session using the specified transport mode, authenticates
+// with the passkey, and returns a Conn ready for use.
 // lastReceivedSeq is the last data sequence number received from the session
 // (0 on first connect, >0 on reconnect for catchup).
-func Dial(ctx context.Context, host string, port int, passkey []byte, lastReceivedSeq uint64) (*Conn, error) {
+func Dial(ctx context.Context, mode DialMode, host string, port int, passkey []byte, lastReceivedSeq uint64) (Conn, error) {
+	switch mode {
+	case DialQUIC:
+		return dialQUIC(ctx, host, port, passkey, lastReceivedSeq)
+	case DialTCP:
+		return dialTCP(ctx, host, port, passkey, lastReceivedSeq)
+	default:
+		return nil, fmt.Errorf("unknown dial mode: %d", mode)
+	}
+}
+
+// dialQUIC connects to a session's QUIC listener, authenticates with the passkey,
+// and returns a Conn with control and data streams ready for use.
+func dialQUIC(ctx context.Context, host string, port int, passkey []byte, lastReceivedSeq uint64) (Conn, error) {
 	addr, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s:%d: %w", host, port, err)
@@ -42,7 +55,7 @@ func Dial(ctx context.Context, host string, port int, passkey []byte, lastReceiv
 		return nil, fmt.Errorf("QUIC dial: %w", err)
 	}
 
-	conn, err := performAuth(ctx, qconn, passkey, lastReceivedSeq)
+	conn, err := performQUICAuth(ctx, qconn, passkey, lastReceivedSeq)
 	if err != nil {
 		qconn.CloseWithError(1, "auth failed")
 		tr.Close()
@@ -53,7 +66,7 @@ func Dial(ctx context.Context, host string, port int, passkey []byte, lastReceiv
 	return conn, nil
 }
 
-func performAuth(ctx context.Context, qconn *quic.Conn, passkey []byte, lastReceivedSeq uint64) (*Conn, error) {
+func performQUICAuth(ctx context.Context, qconn *quic.Conn, passkey []byte, lastReceivedSeq uint64) (*quicConn, error) {
 	// Open control stream (stream 0)
 	controlStream, err := qconn.OpenStreamSync(ctx)
 	if err != nil {
@@ -107,9 +120,9 @@ func performAuth(ctx context.Context, qconn *quic.Conn, passkey []byte, lastRece
 		return nil, fmt.Errorf("write data stream seq header: %w", err)
 	}
 
-	return &Conn{
-		QConn:   qconn,
-		Control: controlStream,
-		Data:    dataStream,
+	return &quicConn{
+		qconn:   qconn,
+		control: controlStream,
+		data:    dataStream,
 	}, nil
 }

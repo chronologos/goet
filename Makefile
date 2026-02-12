@@ -47,16 +47,21 @@ FUZZ_TARGETS := \
 	FuzzBufferDataIntegrity:./internal/catchup/ \
 	FuzzCoalescerDataIntegrity:./internal/coalesce/
 
+FUZZ_LOGDIR := /tmp/goet-fuzz
+
 fuzz:
+	@mkdir -p $(FUZZ_LOGDIR)
 	@echo "Fuzzing all $(words $(FUZZ_TARGETS)) targets ($(FUZZTIME) each, 4 parallel)..."
+	@echo "Logs: $(FUZZ_LOGDIR)/"
 	@printf '%s\n' $(FUZZ_TARGETS) \
-		| xargs -P4 -I{} sh -c ' \
-			name=$$(echo {} | cut -d: -f1); \
-			pkg=$$(echo {} | cut -d: -f2); \
+		| xargs -P4 -L1 sh -c ' \
+			name=$$(echo "$$1" | cut -d: -f1); \
+			pkg=$$(echo "$$1" | cut -d: -f2); \
+			logfile=$(FUZZ_LOGDIR)/$${name}.log; \
 			echo "  $$name"; \
-			$(GO) test -fuzz="^$${name}$$" -fuzztime=$(FUZZTIME) $$pkg > /dev/null 2>&1 \
-				|| { echo "FAIL: $$name"; exit 1; } \
-		'
+			$(GO) test -fuzz="^$${name}$$" -fuzztime=$(FUZZTIME) $$pkg > "$$logfile" 2>&1 \
+				|| { echo "FAIL: $$name (see $$logfile)"; exit 1; } \
+		' _
 	@echo "All fuzz targets passed."
 
 clean:

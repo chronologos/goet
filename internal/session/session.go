@@ -32,10 +32,10 @@ type Config struct {
 // Tagging with the source connection lets the select loop discard stale events
 // from old connections after a reconnect.
 type streamEvent struct {
-	conn   *transport.Conn // which connection produced this event
-	stream string          // "control" or "data"
-	msg    any             // decoded message (nil if error)
-	err    error           // read error (nil if message)
+	conn   transport.Conn // which connection produced this event
+	stream string         // "control" or "data"
+	msg    any            // decoded message (nil if error)
+	err    error          // read error (nil if message)
 }
 
 // Session is the server-side half of a reconnectable terminal.
@@ -47,12 +47,12 @@ type Session struct {
 	log     *slog.Logger
 	ptmx    *os.File
 	cmd     *exec.Cmd
-	ln      *transport.Listener
+	ln      transport.Listener
 	buf     *catchup.Buffer
 	coal    *coalesce.Coalescer
-	conn    *transport.Conn // current connection (nil when disconnected)
-	sendSeq uint64          // next outbound data sequence
-	recvSeq uint64          // last received data sequence from client
+	conn    transport.Conn // current connection (nil when disconnected)
+	sendSeq uint64         // next outbound data sequence
+	recvSeq uint64         // last received data sequence from client
 
 	// PTY lifecycle — nil until first client connects with TerminalInfo.
 	ptyDataCh chan []byte    // closed when PTY read goroutine exits
@@ -79,8 +79,8 @@ func New(cfg Config) *Session {
 // spawn until the first client connects with TerminalInfo, and runs until
 // the shell exits, the context is cancelled, or a client sends Shutdown.
 func (s *Session) Run(ctx context.Context) error {
-	// Start QUIC listener
-	ln, err := transport.Listen(s.cfg.Port, s.cfg.Passkey)
+	// Start dual listener (QUIC + TCP on same port)
+	ln, err := transport.ListenDual(s.cfg.Port, s.cfg.Passkey)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
@@ -228,7 +228,7 @@ func (s *Session) cleanupShell() {
 
 // acceptResult carries the result of a single Accept call.
 type acceptResult struct {
-	conn *transport.Conn
+	conn transport.Conn
 	err  error
 }
 
@@ -242,7 +242,7 @@ func (s *Session) acceptLoop(ctx context.Context, ch chan<- acceptResult) {
 
 // readStream reads framed messages from a stream and sends them as events.
 // Exits when the stream returns an error (including connection close).
-func readStream(conn *transport.Conn, stream string, ch chan<- streamEvent) {
+func readStream(conn transport.Conn, stream string, ch chan<- streamEvent) {
 	var readFn func() (any, error)
 	if stream == "control" {
 		readFn = conn.ReadControl
@@ -308,7 +308,7 @@ func (s *Session) handleStreamEvent(ev streamEvent) error {
 // reads TerminalInfo, spawns the PTY (on first connect), exchanges sequence
 // headers, replays catchup data, bounces PTY size, and starts stream reader
 // goroutines. Returns a non-nil error only if PTY spawn fails (fatal).
-func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamEvent) error {
+func (s *Session) handleNewConn(newConn transport.Conn, streamCh chan<- streamEvent) error {
 	// Close old connection — its reader goroutines will exit with errors
 	// and be discarded by the connection-tag check in handleStreamEvent.
 	s.closeConn()
@@ -333,9 +333,9 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 
 	// Read TerminalInfo from client (before reader goroutines start).
 	// Deadline prevents a misbehaving client from stalling the event loop.
-	s.conn.Control.SetReadDeadline(time.Now().Add(5 * time.Second))
+	s.conn.SetControlReadDeadline(time.Now().Add(5 * time.Second))
 	msg, err := s.conn.ReadControl()
-	s.conn.Control.SetReadDeadline(time.Time{})
+	s.conn.SetControlReadDeadline(time.Time{})
 	if err != nil {
 		s.log.Warn("read terminal info failed", "err", err)
 		s.closeConn()
@@ -364,8 +364,8 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	}
 
 	// Replay catchup: send all data the client missed.
-	// newConn.LastClientSeq is what the client told us it last received.
-	entries := s.buf.ReplaySince(newConn.LastClientSeq)
+	// newConn.LastClientSeq() is what the client told us it last received.
+	entries := s.buf.ReplaySince(newConn.LastClientSeq())
 	for _, e := range entries {
 		if err := s.conn.WriteData(&protocol.Data{
 			Seq:     e.Seq,
@@ -382,6 +382,9 @@ func (s *Session) handleNewConn(newConn *transport.Conn, streamCh chan<- streamE
 	if err := bouncePTYSize(s.ptmx); err != nil {
 		s.log.Warn("bounce pty size failed", "err", err)
 	}
+
+	// Start demux (no-op for QUIC; starts background reader for TCP)
+	s.conn.StartDemux()
 
 	// Start reader goroutines for the new connection
 	go readStream(s.conn, "control", streamCh)

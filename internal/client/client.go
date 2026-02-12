@@ -36,10 +36,11 @@ const (
 
 // Config holds client configuration.
 type Config struct {
-	Host    string
-	Port    int
-	Passkey []byte
-	Profile bool // emit RTT/traffic stats to stderr
+	Host     string
+	Port     int
+	Passkey  []byte
+	Profile  bool               // emit RTT/traffic stats to stderr
+	DialMode transport.DialMode // QUIC (default) or TCP
 }
 
 // Client is the terminal-facing half of a reconnectable terminal session.
@@ -176,6 +177,9 @@ func (c *Client) Run(ctx context.Context) error {
 		// Reset escape state for new connection
 		c.escape.Reset()
 
+		// Start demux (no-op for QUIC; starts background reader for TCP)
+		conn.StartDemux()
+
 		reason := c.ioLoop(ctx, conn, stdinCh)
 
 		// Restore terminal before logging or sleeping
@@ -209,15 +213,15 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 // dial connects to the session with the current recvSeq for catchup.
-func (c *Client) dial(ctx context.Context) (*transport.Conn, error) {
+func (c *Client) dial(ctx context.Context) (transport.Conn, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return transport.Dial(dialCtx, c.cfg.Host, c.cfg.Port, c.cfg.Passkey, c.recvSeq)
+	return transport.Dial(dialCtx, c.cfg.DialMode, c.cfg.Host, c.cfg.Port, c.cfg.Passkey, c.recvSeq)
 }
 
 // handleSequenceExchange reads the session's SequenceHeader from the control
 // stream and resends any data the session missed from our catchup buffer.
-func (c *Client) handleSequenceExchange(conn *transport.Conn) error {
+func (c *Client) handleSequenceExchange(conn transport.Conn) error {
 	msg, err := conn.ReadControl()
 	if err != nil {
 		return fmt.Errorf("read seq header: %w", err)
@@ -243,12 +247,12 @@ func (c *Client) handleSequenceExchange(conn *transport.Conn) error {
 }
 
 // sendTerminalInfo sends the client's TERM value on the control stream.
-func (c *Client) sendTerminalInfo(conn *transport.Conn) error {
+func (c *Client) sendTerminalInfo(conn transport.Conn) error {
 	return conn.WriteControl(&protocol.TerminalInfo{Term: os.Getenv("TERM")})
 }
 
 // sendResize sends the current terminal size on the control stream.
-func (c *Client) sendResize(conn *transport.Conn) {
+func (c *Client) sendResize(conn transport.Conn) {
 	if c.stdinFd < 0 {
 		return
 	}
@@ -264,7 +268,7 @@ func (c *Client) sendResize(conn *transport.Conn) {
 
 // ioLoop is the per-connection event loop. It blocks until the connection
 // fails, the user types ~., the session shuts down, or the context is done.
-func (c *Client) ioLoop(ctx context.Context, conn *transport.Conn, stdinCh <-chan []byte) exitReason {
+func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan []byte) exitReason {
 	if c.cfg.Profile {
 		defer c.logProfileSummary(conn)
 	}
@@ -386,7 +390,7 @@ func (c *Client) readStdin(ch chan<- []byte) {
 
 // flushStdinCoalesced sends any buffered coalesced stdin data, storing it in
 // the catchup buffer and writing to the connection.
-func (c *Client) flushStdinCoalesced(coal *coalesce.Coalescer, conn *transport.Conn) error {
+func (c *Client) flushStdinCoalesced(coal *coalesce.Coalescer, conn transport.Conn) error {
 	data := coal.Flush()
 	if data == nil {
 		return nil

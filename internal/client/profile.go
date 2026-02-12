@@ -12,8 +12,13 @@ import (
 
 // logProfile emits a periodic RTT/loss line to stderr.
 // Called from ioLoop on each heartbeat tick when Profile is enabled.
-func (c *Client) logProfile(conn *transport.Conn) {
-	stats := conn.QConn.ConnectionStats()
+func (c *Client) logProfile(conn transport.Conn) {
+	pc, ok := conn.(transport.ProfileableConn)
+	if !ok {
+		fmt.Fprintf(c.stderr, "[profile] transport-level stats not available for this connection type\n")
+		return
+	}
+	stats := pc.ConnectionStats()
 	fmt.Fprintf(c.stderr, "[profile] rtt=%s (min=%s smooth=%s jitter=%s) loss=%d/%dpkts\n",
 		formatDuration(stats.LatestRTT),
 		formatDuration(stats.MinRTT),
@@ -26,8 +31,16 @@ func (c *Client) logProfile(conn *transport.Conn) {
 
 // logProfileSummary emits a final summary to stderr and writes JSON to /tmp.
 // Called via defer in ioLoop when Profile is enabled.
-func (c *Client) logProfileSummary(conn *transport.Conn) {
-	stats := conn.QConn.ConnectionStats()
+func (c *Client) logProfileSummary(conn transport.Conn) {
+	pc, ok := conn.(transport.ProfileableConn)
+	if !ok {
+		duration := time.Since(c.profileStart)
+		fmt.Fprintf(c.stderr, "[profile] === Connection Profile ===\n")
+		fmt.Fprintf(c.stderr, "[profile] Duration: %s\n", duration.Round(time.Second))
+		fmt.Fprintf(c.stderr, "[profile] Transport: TCP (transport-level stats not available)\n")
+		return
+	}
+	stats := pc.ConnectionStats()
 	duration := time.Since(c.profileStart)
 	fmt.Fprintf(c.stderr, "[profile] === Connection Profile ===\n")
 	fmt.Fprintf(c.stderr, "[profile] Duration: %s\n", duration.Round(time.Second))
@@ -74,8 +87,12 @@ type profileTraffic struct {
 }
 
 // writeProfileJSON dumps a JSON profile to /tmp/goet-profile-<timestamp>.json.
-func (c *Client) writeProfileJSON(conn *transport.Conn) {
-	stats := conn.QConn.ConnectionStats()
+func (c *Client) writeProfileJSON(conn transport.Conn) {
+	pc, ok := conn.(transport.ProfileableConn)
+	if !ok {
+		return
+	}
+	stats := pc.ConnectionStats()
 	now := time.Now()
 	duration := now.Sub(c.profileStart)
 

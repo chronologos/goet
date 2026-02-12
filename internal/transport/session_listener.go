@@ -13,8 +13,8 @@ import (
 	"github.com/chronologos/goet/internal/protocol"
 )
 
-// Listener wraps a QUIC listener for the session side.
-type Listener struct {
+// quicListener wraps a QUIC listener for the session side.
+type quicListener struct {
 	tr      *quic.Transport
 	ln      *quic.Listener
 	port    int
@@ -23,16 +23,16 @@ type Listener struct {
 
 // Listen creates a QUIC listener on a random UDP port (or the specified port).
 // The session uses this to accept client connections.
-func Listen(port int, passkey []byte) (*Listener, error) {
+func Listen(port int, passkey []byte) (Listener, error) {
 	cert, err := GenerateSelfSignedCert()
 	if err != nil {
 		return nil, fmt.Errorf("generate TLS cert: %w", err)
 	}
-	return listenWithCert(port, passkey, cert)
+	return listenQUIC(port, passkey, cert)
 }
 
-// listenWithCert creates a QUIC listener using the provided TLS certificate.
-func listenWithCert(port int, passkey []byte, cert tls.Certificate) (*Listener, error) {
+// listenQUIC creates a QUIC listener using the provided TLS certificate.
+func listenQUIC(port int, passkey []byte, cert tls.Certificate) (*quicListener, error) {
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: port}
 	udpConn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
@@ -54,7 +54,7 @@ func listenWithCert(port int, passkey []byte, cert tls.Certificate) (*Listener, 
 
 	localPort := udpConn.LocalAddr().(*net.UDPAddr).Port
 
-	return &Listener{
+	return &quicListener{
 		tr:      tr,
 		ln:      ln,
 		port:    localPort,
@@ -63,13 +63,13 @@ func listenWithCert(port int, passkey []byte, cert tls.Certificate) (*Listener, 
 }
 
 // Port returns the UDP port the listener is bound to.
-func (l *Listener) Port() int {
+func (l *quicListener) Port() int {
 	return l.port
 }
 
 // Accept waits for and authenticates a new client connection.
 // Returns a Conn with control and data streams ready for use.
-func (l *Listener) Accept(ctx context.Context) (*Conn, error) {
+func (l *quicListener) Accept(ctx context.Context) (Conn, error) {
 	qconn, err := l.ln.Accept(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("accept QUIC connection: %w", err)
@@ -84,7 +84,7 @@ func (l *Listener) Accept(ctx context.Context) (*Conn, error) {
 	return conn, nil
 }
 
-func (l *Listener) authenticate(ctx context.Context, qconn *quic.Conn) (*Conn, error) {
+func (l *quicListener) authenticate(ctx context.Context, qconn *quic.Conn) (*quicConn, error) {
 	// Accept control stream (opened by client)
 	controlStream, err := qconn.AcceptStream(ctx)
 	if err != nil {
@@ -145,16 +145,16 @@ func (l *Listener) authenticate(ctx context.Context, qconn *quic.Conn) (*Conn, e
 		return nil, fmt.Errorf("expected SequenceHeader on data stream, got %T", msg)
 	}
 
-	return &Conn{
-		QConn:          qconn,
-		Control:        controlStream,
-		Data:           dataStream,
-		LastClientSeq:  seqHdr.LastReceivedSeq,
+	return &quicConn{
+		qconn:         qconn,
+		control:       controlStream,
+		data:          dataStream,
+		lastClientSeq: seqHdr.LastReceivedSeq,
 	}, nil
 }
 
 // Close shuts down the listener and underlying transport.
-func (l *Listener) Close() error {
+func (l *quicListener) Close() error {
 	l.ln.Close()
 	return l.tr.Close()
 }

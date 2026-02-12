@@ -15,6 +15,7 @@ import (
 
 	"github.com/chronologos/goet/internal/client"
 	"github.com/chronologos/goet/internal/session"
+	"github.com/chronologos/goet/internal/transport"
 )
 
 func main() {
@@ -30,12 +31,13 @@ func main() {
 		if dest := findDestination(); dest != "" {
 			runSSHClient(dest)
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: goet [--install] [user@]host")
+			fmt.Fprintln(os.Stderr, "usage: goet [--install] [--tcp] [user@]host")
 			fmt.Fprintln(os.Stderr, "       goet --local -p <port> -k <passkey-hex> [host]")
 			fmt.Fprintln(os.Stderr, "       goet session -f <session-id> -p <port>")
 			fmt.Fprintln(os.Stderr, "")
 			fmt.Fprintln(os.Stderr, "flags:")
 			fmt.Fprintln(os.Stderr, "  --install   install goet on remote if missing")
+			fmt.Fprintln(os.Stderr, "  --tcp       use TCP+TLS transport instead of QUIC")
 			fmt.Fprintln(os.Stderr, "  --profile   emit RTT/traffic stats to stderr")
 			os.Exit(1)
 		}
@@ -58,9 +60,18 @@ func findDestination() string {
 	return ""
 }
 
+// dialMode returns the transport mode based on CLI flags.
+func dialMode() transport.DialMode {
+	if hasFlag("--tcp") {
+		return transport.DialTCP
+	}
+	return transport.DialQUIC
+}
+
 func runSSHClient(destination string) {
 	profile := hasFlag("--profile")
 	install := hasFlag("--install")
+	mode := dialMode()
 
 	res, err := client.SpawnSSH(destination, install)
 	if err != nil {
@@ -69,24 +80,26 @@ func runSSHClient(destination string) {
 	}
 
 	runClientWithConfig(client.Config{
-		Host:    res.Host,
-		Port:    res.Port,
-		Passkey: res.Passkey,
-		Profile: profile,
+		Host:     res.Host,
+		Port:     res.Port,
+		Passkey:  res.Passkey,
+		Profile:  profile,
+		DialMode: mode,
 	})
 }
 
 func runClient() {
 	profile := hasFlag("--profile")
+	mode := dialMode()
 
 	fs := flag.NewFlagSet("client", flag.ExitOnError)
-	port := fs.Int("p", 0, "UDP port to connect to (required)")
+	port := fs.Int("p", 0, "port to connect to (required)")
 	passkeyHex := fs.String("k", "", "hex-encoded passkey (required)")
 
 	// Strip double-dash flags before parsing (flag package only supports single-dash).
 	var args []string
 	for _, arg := range os.Args[1:] {
-		if arg == "--local" || arg == "--profile" || arg == "--install" {
+		if arg == "--local" || arg == "--profile" || arg == "--install" || arg == "--tcp" {
 			continue
 		}
 		args = append(args, arg)
@@ -116,10 +129,11 @@ func runClient() {
 	}
 
 	runClientWithConfig(client.Config{
-		Host:    host,
-		Port:    *port,
-		Passkey: passkey,
-		Profile: profile,
+		Host:     host,
+		Port:     *port,
+		Passkey:  passkey,
+		Profile:  profile,
+		DialMode: mode,
 	})
 }
 
@@ -139,7 +153,7 @@ func runClientWithConfig(cfg client.Config) {
 func runSession() {
 	fs := flag.NewFlagSet("session", flag.ExitOnError)
 	sessionID := fs.String("f", "", "session ID (required, foreground mode)")
-	port := fs.Int("p", 0, "UDP port to listen on (0 = random)")
+	port := fs.Int("p", 0, "port to listen on (0 = random)")
 
 	// Skip "session" subcommand if present
 	args := os.Args[1:]

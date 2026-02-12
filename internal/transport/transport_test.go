@@ -15,7 +15,7 @@ import (
 )
 
 // setupConnPair creates a Listener and dials into it, returning both sides.
-func setupConnPair(t *testing.T) (serverConn, clientConn *Conn, cleanup func()) {
+func setupConnPair(t *testing.T) (serverConn, clientConn Conn, cleanup func()) {
 	t.Helper()
 
 	passkey, err := auth.GeneratePasskey()
@@ -30,7 +30,7 @@ func setupConnPair(t *testing.T) (serverConn, clientConn *Conn, cleanup func()) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-	serverDone := make(chan *Conn, 1)
+	serverDone := make(chan Conn, 1)
 	serverErr := make(chan error, 1)
 	go func() {
 		conn, err := ln.Accept(ctx)
@@ -41,14 +41,14 @@ func setupConnPair(t *testing.T) (serverConn, clientConn *Conn, cleanup func()) 
 		serverDone <- conn
 	}()
 
-	cc, err := Dial(ctx, "127.0.0.1", ln.Port(), passkey, 0)
+	cc, err := Dial(ctx, DialQUIC, "127.0.0.1", ln.Port(), passkey, 0)
 	if err != nil {
 		cancel()
 		ln.Close()
 		t.Fatalf("client dial: %v", err)
 	}
 
-	var sc *Conn
+	var sc Conn
 	select {
 	case sc = <-serverDone:
 	case err := <-serverErr:
@@ -172,7 +172,7 @@ func TestWrongPasskeyRejected(t *testing.T) {
 		serverErr <- err
 	}()
 
-	_, err = Dial(ctx, "127.0.0.1", ln.Port(), wrongPasskey, 0)
+	_, err = Dial(ctx, DialQUIC, "127.0.0.1", ln.Port(), wrongPasskey, 0)
 	if err == nil {
 		t.Fatal("expected auth error, got nil")
 	}

@@ -132,7 +132,7 @@ func readUntilFromPipe(t *testing.T, r *io.PipeReader, substr string, timeout ti
 
 // readUntilData reads Data messages from a raw transport.Conn until substr
 // is found or timeout expires.
-func readUntilData(t *testing.T, conn *transport.Conn, substr string, timeout time.Duration) string {
+func readUntilData(t *testing.T, conn transport.Conn, substr string, timeout time.Duration) string {
 	t.Helper()
 	var buf bytes.Buffer
 	deadline := time.After(timeout)
@@ -194,7 +194,7 @@ func TestClientReconnect(t *testing.T) {
 	// sending Shutdown (simulating network death, keeping session alive).
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel1()
-	conn1, err := transport.Dial(ctx1, "127.0.0.1", port, passkey, 0)
+	conn1, err := transport.Dial(ctx1, transport.DialQUIC, "127.0.0.1", port, passkey, 0)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -252,6 +252,10 @@ func TestClientEscapeDisconnect(t *testing.T) {
 
 	stdinW, stdoutR, errCh, cancel := startTestClient(t, port, passkey)
 	defer cancel()
+
+	// Drain stdout to prevent the client from blocking on pipe writes
+	// when shell initialization output fills the pipe buffer.
+	go io.Copy(io.Discard, stdoutR)
 	defer stdoutR.Close()
 
 	// Wait for connection
