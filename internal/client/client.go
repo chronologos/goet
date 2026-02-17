@@ -135,7 +135,8 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 		}
 
-		if c.profileStart.IsZero() {
+		reconnecting := !c.profileStart.IsZero()
+		if !reconnecting {
 			c.profileStart = time.Now()
 		}
 
@@ -159,6 +160,10 @@ func (c *Client) Run(ctx context.Context) error {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		}
+
+		if reconnecting {
+			fmt.Fprintf(c.stderr, "Reconnected.\r\n")
 		}
 
 		// Enter raw mode while connected (skip for pipes/tests).
@@ -199,6 +204,7 @@ func (c *Client) Run(ctx context.Context) error {
 		switch reason {
 		case exitNetwork:
 			conn.Close()
+			fmt.Fprintf(c.stderr, "\r\nConnection lost. Reconnecting...\r\n")
 			c.log.Info("connection lost, reconnecting", "delay", reconnectDelay)
 			select {
 			case <-time.After(reconnectDelay):
@@ -301,7 +307,12 @@ func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
 
-	lastRecv := time.Now()
+	// Use Round(0) to strip the monotonic clock reading. On macOS,
+	// Go's monotonic clock (mach_absolute_time) does NOT advance during
+	// system sleep. Wall clock does. Without this, time.Since(lastRecv)
+	// after an 8-hour sleep might return ~5s instead of ~8h, preventing
+	// the heartbeat timeout from detecting the stale connection.
+	lastRecv := time.Now().Round(0)
 	escapeBuf := make([]byte, stdinBufSize+2) // extra for held ~
 
 	for {
@@ -310,6 +321,11 @@ func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan
 			if !ok {
 				c.flushStdinCoalesced(coal, conn) // best-effort; error ignored — we're exiting anyway
 				return exitStdinEOF
+			}
+			// Check timeout before writing — if the select picked this case
+			// instead of heartbeat.C after wake, we still detect the stale connection.
+			if time.Since(lastRecv) > recvTimeout {
+				return exitNetwork
 			}
 			n, action := c.escape.Process(data, escapeBuf)
 			if action == EscDisconnect {
@@ -324,6 +340,9 @@ func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan
 			}
 
 		case <-coal.Timer():
+			if time.Since(lastRecv) > recvTimeout {
+				return exitNetwork
+			}
 			if c.flushStdinCoalesced(coal, conn) != nil {
 				return exitNetwork
 			}
@@ -332,7 +351,7 @@ func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan
 			if res.err != nil {
 				return exitNetwork
 			}
-			lastRecv = time.Now()
+			lastRecv = time.Now().Round(0)
 			switch res.msg.(type) {
 			case *protocol.Heartbeat:
 				// Noted — no action needed
@@ -356,7 +375,7 @@ func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan
 				}
 				return exitNetwork
 			}
-			lastRecv = time.Now()
+			lastRecv = time.Now().Round(0)
 			if d, ok := res.msg.(*protocol.Data); ok {
 				if _, err := c.stdout.Write(d.Payload); err != nil {
 					c.log.Error("stdout write failed", "err", err)
@@ -371,13 +390,15 @@ func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan
 			c.sendResize(conn)
 
 		case <-heartbeat.C:
+			// Check timeout BEFORE writing — a write to a dead connection
+			// may block on flow control, preventing the check from running.
+			if time.Since(lastRecv) > recvTimeout {
+				c.log.Warn("heartbeat timeout", "since_last_recv", time.Since(lastRecv))
+				return exitNetwork
+			}
 			if err := conn.WriteControl(&protocol.Heartbeat{
 				TimestampMs: time.Now().UnixMilli(),
 			}); err != nil {
-				return exitNetwork
-			}
-			if time.Since(lastRecv) > recvTimeout {
-				c.log.Warn("heartbeat timeout", "since_last_recv", time.Since(lastRecv))
 				return exitNetwork
 			}
 			if c.cfg.Profile {

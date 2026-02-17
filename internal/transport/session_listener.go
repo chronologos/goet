@@ -43,7 +43,8 @@ func listenQUIC(port int, passkey []byte, cert tls.Certificate) (*quicListener, 
 	tlsConf := ServerTLSConfig(cert)
 	quicConf := &quic.Config{
 		MaxIdleTimeout:    30 * time.Second,
-		InitialPacketSize: 1200, // Tailscale MTU is 1280; default 1350 gets dropped
+		KeepAlivePeriod:   10 * time.Second, // send PINGs to detect dead connections faster after sleep/wake
+		InitialPacketSize: 1200,             // Tailscale MTU is 1280; default 1350 gets dropped
 	}
 
 	ln, err := tr.Listen(tlsConf, quicConf)
