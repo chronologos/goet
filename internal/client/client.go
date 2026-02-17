@@ -344,8 +344,13 @@ func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan
 			}
 			lastRecv = time.Now()
 			if d, ok := res.msg.(*protocol.Data); ok {
+				if _, err := c.stdout.Write(d.Payload); err != nil {
+					c.log.Error("stdout write failed", "err", err)
+					return exitStdinEOF // stdout broken, no point continuing
+				}
+				// Update recvSeq only after successful write so the session
+				// retains the data in its catchup buffer for replay on reconnect.
 				c.recvSeq = d.Seq
-				c.stdout.Write(d.Payload)
 			}
 
 		case <-sigwinchCh:

@@ -65,6 +65,9 @@ func (dl *dualListener) quicAcceptLoop(ctx context.Context) {
 		select {
 		case dl.connCh <- acceptRes{conn: conn, err: err}:
 		case <-ctx.Done():
+			if conn != nil {
+				conn.Close()
+			}
 			return
 		}
 		if err != nil {
@@ -79,6 +82,9 @@ func (dl *dualListener) tcpAcceptLoop(ctx context.Context) {
 		select {
 		case dl.connCh <- acceptRes{conn: conn, err: err}:
 		case <-ctx.Done():
+			if conn != nil {
+				conn.Close()
+			}
 			return
 		}
 		if err != nil {
@@ -102,11 +108,25 @@ func (dl *dualListener) Port() int {
 	return dl.port
 }
 
-// Close shuts down both listeners.
+// Close shuts down both listeners and drains any queued connections.
 func (dl *dualListener) Close() error {
 	dl.cancel()
 	tcpErr := dl.tcp.Close()
 	quicErr := dl.quic.Close()
+
+	// Drain any connections that were accepted but not consumed.
+	for {
+		select {
+		case res := <-dl.connCh:
+			if res.conn != nil {
+				res.conn.Close()
+			}
+		default:
+			goto done
+		}
+	}
+done:
+
 	if quicErr != nil {
 		return quicErr
 	}

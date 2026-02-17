@@ -70,9 +70,16 @@ func (l *tcpListener) Accept(ctx context.Context) (Conn, error) {
 		}
 		return conn, nil
 	case <-ctx.Done():
-		// Close the listener to unblock the Accept goroutine, but the
-		// caller (dual listener) manages listener lifecycle, so we just
-		// return the context error here.
+		// Context cancelled — the goroutine may still be blocked on
+		// l.ln.Accept(). It will unblock when the listener is closed by
+		// the caller. If it accepted a connection before that, close it
+		// so it doesn't leak.
+		go func() {
+			res := <-ch
+			if res.conn != nil {
+				res.conn.Close()
+			}
+		}()
 		return nil, ctx.Err()
 	}
 }

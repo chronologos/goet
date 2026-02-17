@@ -87,6 +87,9 @@ func WriteMessage(w io.Writer, msg any) error {
 	case *TerminalInfo:
 		msgType = MsgTerminalInfo
 		termBytes := []byte(m.Term)
+		if len(termBytes) > 65535 {
+			return fmt.Errorf("terminal info term too long: %d bytes (max 65535)", len(termBytes))
+		}
 		payload = make([]byte, 2+len(termBytes))
 		binary.BigEndian.PutUint16(payload[0:2], uint16(len(termBytes)))
 		copy(payload[2:], termBytes)
