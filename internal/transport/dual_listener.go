@@ -62,15 +62,20 @@ func ListenDual(port int, passkey []byte) (Listener, error) {
 func (dl *dualListener) quicAcceptLoop(ctx context.Context) {
 	for {
 		conn, err := dl.quic.Accept(ctx)
-		select {
-		case dl.connCh <- acceptRes{conn: conn, err: err}:
-		case <-ctx.Done():
-			if conn != nil {
-				conn.Close()
-			}
-			return
-		}
 		if err != nil {
+			// Context cancelled means shutdown — exit the loop.
+			if ctx.Err() != nil {
+				return
+			}
+			// Transient error (auth failure, bad client) — log and continue
+			// accepting. Only fatal errors (listener closed) will also
+			// trigger ctx.Err() since Close() cancels the context first.
+			continue
+		}
+		select {
+		case dl.connCh <- acceptRes{conn: conn}:
+		case <-ctx.Done():
+			conn.Close()
 			return
 		}
 	}
@@ -79,15 +84,16 @@ func (dl *dualListener) quicAcceptLoop(ctx context.Context) {
 func (dl *dualListener) tcpAcceptLoop(ctx context.Context) {
 	for {
 		conn, err := dl.tcp.Accept(ctx)
-		select {
-		case dl.connCh <- acceptRes{conn: conn, err: err}:
-		case <-ctx.Done():
-			if conn != nil {
-				conn.Close()
-			}
-			return
-		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			continue
+		}
+		select {
+		case dl.connCh <- acceptRes{conn: conn}:
+		case <-ctx.Done():
+			conn.Close()
 			return
 		}
 	}

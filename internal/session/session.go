@@ -18,7 +18,8 @@ import (
 const (
 	ptyReadBufSize    = 32 * 1024 // 32 KB per PTY read
 	heartbeatInterval = 5 * time.Second
-	shellExitGrace    = 2 * time.Second // wait for shell after SIGHUP before SIGKILL
+	recvTimeout       = 30 * time.Second // detect dead clients (matches QUIC MaxIdleTimeout)
+	shellExitGrace    = 2 * time.Second  // wait for shell after SIGHUP before SIGKILL
 )
 
 // Config holds session configuration.
@@ -114,6 +115,7 @@ func (s *Session) Run(ctx context.Context) error {
 	streamCh := make(chan streamEvent, 8)
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
+	lastRecv := time.Now()
 
 	for {
 		select {
@@ -132,6 +134,9 @@ func (s *Session) Run(ctx context.Context) error {
 			s.flushCoalesced()
 
 		case ev := <-streamCh:
+			if ev.conn == s.conn && ev.err == nil {
+				lastRecv = time.Now()
+			}
 			if err := s.handleStreamEvent(ev); err != nil {
 				return err
 			}
@@ -146,6 +151,7 @@ func (s *Session) Run(ctx context.Context) error {
 				if err := s.handleNewConn(res.conn, streamCh); err != nil {
 					return fmt.Errorf("handle new conn: %w", err)
 				}
+				lastRecv = time.Now()
 				// After handleNewConn, PTY channels may have been created.
 				if s.ptyDataCh != nil && ptyDataCh == nil {
 					ptyDataCh = s.ptyDataCh
@@ -161,6 +167,9 @@ func (s *Session) Run(ctx context.Context) error {
 					TimestampMs: time.Now().UnixMilli(),
 				}); err != nil {
 					s.log.Warn("heartbeat write failed", "err", err)
+					s.closeConn()
+				} else if time.Since(lastRecv) > recvTimeout {
+					s.log.Warn("client receive timeout", "since_last_recv", time.Since(lastRecv))
 					s.closeConn()
 				}
 			}
@@ -283,12 +292,15 @@ func (s *Session) handleStreamEvent(ev streamEvent) error {
 			}
 		}
 	case *protocol.Data:
-		s.recvSeq = msg.Seq
 		if s.ptmx != nil {
 			if _, err := s.ptmx.Write(msg.Payload); err != nil {
 				s.log.Warn("pty write failed", "err", err)
+				break // don't advance recvSeq — client will resend on reconnect
 			}
 		}
+		// Update recvSeq only after successful write so the client
+		// retains the data in its catchup buffer for replay on reconnect.
+		s.recvSeq = msg.Seq
 	case *protocol.Heartbeat:
 		// Noted — no action needed
 	case *protocol.Shutdown:

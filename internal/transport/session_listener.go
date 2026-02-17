@@ -85,14 +85,21 @@ func (l *quicListener) Accept(ctx context.Context) (Conn, error) {
 }
 
 func (l *quicListener) authenticate(ctx context.Context, qconn *quic.Conn) (*quicConn, error) {
-	// Accept control stream (opened by client)
-	controlStream, err := qconn.AcceptStream(ctx)
+	// Accept control stream (opened by client).
+	// Timeout prevents a misbehaving client from blocking the accept path
+	// by completing the TLS handshake but never opening a stream.
+	authCtx, authCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer authCancel()
+	controlStream, err := qconn.AcceptStream(authCtx)
 	if err != nil {
 		return nil, fmt.Errorf("accept control stream: %w", err)
 	}
 
-	// Read auth request
+	// Read auth request.
+	// Deadline prevents a client from stalling after opening the stream.
+	controlStream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	msg, err := protocol.ReadMessage(controlStream)
+	controlStream.SetReadDeadline(time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("read auth request: %w", err)
 	}

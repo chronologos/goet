@@ -85,8 +85,11 @@ func (l *tcpListener) Accept(ctx context.Context) (Conn, error) {
 }
 
 func (l *tcpListener) authenticate(tlsConn *tls.Conn) (*tcpConn, error) {
-	// Read auth request
+	// Read auth request.
+	// Deadline prevents a client from stalling after TLS handshake.
+	tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	msg, err := protocol.ReadMessage(tlsConn)
+	tlsConn.SetReadDeadline(time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("read auth request: %w", err)
 	}

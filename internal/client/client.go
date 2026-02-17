@@ -161,7 +161,9 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 		}
 
-		// Enter raw mode while connected (skip for pipes/tests)
+		// Enter raw mode while connected (skip for pipes/tests).
+		// Defer restore with panic protection so the terminal is never
+		// left in raw mode, even if ioLoop or any called code panics.
 		var oldState *term.State
 		if c.stdinFd >= 0 {
 			oldState, err = term.MakeRaw(c.stdinFd)
@@ -170,6 +172,15 @@ func (c *Client) Run(ctx context.Context) error {
 				return fmt.Errorf("make raw: %w", err)
 			}
 		}
+		restoreTerminal := func() {
+			if oldState != nil {
+				if err := term.Restore(c.stdinFd, oldState); err != nil {
+					c.log.Error("terminal restore failed", "err", err)
+				}
+				oldState = nil
+			}
+		}
+		defer restoreTerminal()
 
 		// Send initial resize
 		c.sendResize(conn)
@@ -183,9 +194,7 @@ func (c *Client) Run(ctx context.Context) error {
 		reason := c.ioLoop(ctx, conn, stdinCh)
 
 		// Restore terminal before logging or sleeping
-		if oldState != nil {
-			term.Restore(c.stdinFd, oldState)
-		}
+		restoreTerminal()
 
 		switch reason {
 		case exitNetwork:
@@ -328,6 +337,11 @@ func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan
 			case *protocol.Heartbeat:
 				// Noted — no action needed
 			case *protocol.Shutdown:
+				// Drain any remaining Data messages that arrived before/during
+				// the Shutdown. On QUIC, control and data are separate streams
+				// with no cross-stream ordering, so final Data may still be
+				// buffered in dataCh.
+				c.drainRemainingData(dataCh)
 				return exitShutdown
 			case *protocol.SequenceHeader:
 				// unexpected mid-session; ignore
@@ -412,6 +426,30 @@ func (c *Client) flushStdinCoalesced(coal *coalesce.Coalescer, conn transport.Co
 type streamResult struct {
 	msg any
 	err error
+}
+
+// drainRemainingData writes any buffered Data messages from the data channel
+// to stdout. Called after receiving Shutdown to avoid losing the final output
+// that may have arrived on the data stream before/concurrent with Shutdown on
+// the control stream (QUIC has no cross-stream ordering guarantee).
+func (c *Client) drainRemainingData(dataCh <-chan streamResult) {
+	timeout := time.After(100 * time.Millisecond)
+	for {
+		select {
+		case res := <-dataCh:
+			if res.err != nil {
+				return
+			}
+			if d, ok := res.msg.(*protocol.Data); ok {
+				if _, err := c.stdout.Write(d.Payload); err != nil {
+					return
+				}
+				c.recvSeq = d.Seq
+			}
+		case <-timeout:
+			return
+		}
+	}
 }
 
 // drainForShutdown checks the control channel for a buffered Shutdown message.
