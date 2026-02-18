@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -27,6 +28,7 @@ type Config struct {
 	SessionID string
 	Port      int
 	Passkey   []byte
+	LogWriter io.Writer // if set, logs here instead of stderr
 }
 
 // streamEvent is a tagged message from a connection's stream reader goroutine.
@@ -68,9 +70,13 @@ type Session struct {
 
 // New creates a session but does not start it. Call Run() to begin.
 func New(cfg Config) *Session {
+	logWriter := io.Writer(os.Stderr)
+	if cfg.LogWriter != nil {
+		logWriter = cfg.LogWriter
+	}
 	return &Session{
 		cfg:   cfg,
-		log:   slog.New(slog.NewTextHandler(os.Stderr, nil)).With("component", "session"),
+		log:   slog.New(slog.NewTextHandler(logWriter, nil)).With("component", "session", "sid", cfg.SessionID),
 		buf:   catchup.New(0), // default 64 MB
 		Ready: make(chan struct{}),
 	}

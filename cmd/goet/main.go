@@ -88,6 +88,8 @@ func runSSHClient(destination string) {
 		os.Exit(1)
 	}
 
+	fmt.Fprintf(os.Stderr, "session %s (log: /tmp/goet-%s.log on remote)\n", res.SessionID, res.SessionID)
+
 	runClientWithConfig(client.Config{
 		Host:     res.Host,
 		Port:     res.Port,
@@ -192,10 +194,21 @@ func runSession() {
 		os.Exit(1)
 	}
 
+	// Log to /tmp/goet-<id>.log so session diagnostics survive SSH teardown.
+	logPath := fmt.Sprintf("/tmp/goet-%s.log", *sessionID)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not open log file %s: %v\n", logPath, err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+
 	cfg := session.Config{
 		SessionID: *sessionID,
 		Port:      *port,
 		Passkey:   passkey,
+		LogWriter: logFile, // nil falls back to stderr in session.New()
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

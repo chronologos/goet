@@ -21,9 +21,10 @@ const sshTimeout = 10 * time.Second
 // SSHResult holds the credentials and connection info obtained from the SSH
 // bootstrapping phase. The SSH process is killed after the port is read.
 type SSHResult struct {
-	Host    string
-	Port    int
-	Passkey []byte
+	Host      string
+	Port      int
+	Passkey   []byte
+	SessionID string // short unique ID for this session (used in log filenames)
 }
 
 // sshArgs builds the common SSH argument prefix: [-l user] -o BatchMode=yes host.
@@ -100,9 +101,10 @@ func spawnSSH(user, host, goetPath string) (*SSHResult, error) {
 	}
 
 	passkeyHex := hex.EncodeToString(passkey)
+	sessionID := hex.EncodeToString(passkey[:4]) // short unique ID for log filenames
 
 	// No -t flag — PTY would corrupt the passkey/port protocol on stdin/stdout.
-	args := append(sshArgs(user, host), goetPath, "session", "-f", "ssh", "-p", "0")
+	args := append(sshArgs(user, host), goetPath, "session", "-f", sessionID, "-p", "0")
 
 	cmd := exec.Command("ssh", args...)
 	cmd.Stderr = os.Stderr // SSH errors (host key, auth failures) visible to user
@@ -141,9 +143,10 @@ func spawnSSH(user, host, goetPath string) (*SSHResult, error) {
 	killAndReap(cmd)
 
 	return &SSHResult{
-		Host:    host,
-		Port:    port,
-		Passkey: passkey,
+		Host:      host,
+		Port:      port,
+		Passkey:   passkey,
+		SessionID: sessionID,
 	}, nil
 }
 
