@@ -2,12 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(/usr/local/go/bin/go build:*)",
-      "Bash(/usr/local/go/bin/go test:*)"
+      "Bash(/usr/local/go/bin/go test:*)",
+      "Bash(ssh:*)"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "anki",
     "qmd"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

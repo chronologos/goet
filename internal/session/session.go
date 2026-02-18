@@ -85,7 +85,19 @@ func New(cfg Config) *Session {
 // Run is the session's main loop. It starts the QUIC listener, defers PTY
 // spawn until the first client connects with TerminalInfo, and runs until
 // the shell exits, the context is cancelled, or a client sends Shutdown.
-func (s *Session) Run(ctx context.Context) error {
+func (s *Session) Run(ctx context.Context) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("panic: %v", r)
+			s.log.Error("session panicked", "panic", r)
+		}
+		if retErr != nil {
+			s.log.Info("session exiting", "reason", retErr)
+		} else {
+			s.log.Info("session exiting", "reason", "clean shutdown")
+		}
+	}()
+
 	// Start dual listener (QUIC + TCP on same port)
 	ln, err := transport.ListenDual(s.cfg.Port, s.cfg.Passkey)
 	if err != nil {
@@ -181,6 +193,7 @@ func (s *Session) Run(ctx context.Context) error {
 			}
 
 		case <-shellDone:
+			s.log.Info("shell exited", "err", s.shellErr)
 			s.gracefulShutdown()
 			if s.shellErr != nil {
 				return fmt.Errorf("shell exited: %w", s.shellErr)
@@ -188,6 +201,7 @@ func (s *Session) Run(ctx context.Context) error {
 			return nil
 
 		case <-ctx.Done():
+			s.log.Info("context cancelled", "err", ctx.Err())
 			s.gracefulShutdown()
 			return ctx.Err()
 		}
@@ -338,6 +352,7 @@ func (s *Session) handleNewConn(newConn transport.Conn, streamCh chan<- streamEv
 	s.flushCoalesced()
 
 	s.conn = newConn
+	s.log.Info("client connected", "last_client_seq", newConn.LastClientSeq())
 
 	// Send our SequenceHeader on control stream (tells client what we've
 	// received, so client knows what to resend from its own catchup buffer).
