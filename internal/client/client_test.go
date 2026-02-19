@@ -3,7 +3,10 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -511,10 +514,42 @@ func (a *pipeAccumulator) waitFor(t *testing.T, substr string, timeout time.Dura
 	}
 }
 
+// waitForHash polls output until prefix followed by a 64-char hex SHA-256 hash
+// appears. Returns just the 64-char hash string.
+func (a *pipeAccumulator) waitForHash(t *testing.T, prefix string, timeout time.Duration) string {
+	t.Helper()
+	re := regexp.MustCompile(regexp.QuoteMeta(prefix) + `([0-9a-f]{64})`)
+	deadline := time.After(timeout)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-deadline:
+			a.mu.Lock()
+			got := a.buf.String()
+			a.mu.Unlock()
+			t.Fatalf("timeout waiting for hash with prefix %q in output (len=%d)", prefix, len(got))
+		case <-tick.C:
+			a.mu.Lock()
+			s := a.buf.String()
+			a.mu.Unlock()
+			if m := re.FindStringSubmatch(s); m != nil {
+				return m[1]
+			}
+		}
+	}
+}
+
+// sha256Hex returns the lowercase hex SHA-256 of data.
+func sha256Hex(data []byte) string {
+	h := sha256.Sum256(data)
+	return fmt.Sprintf("%x", h)
+}
+
 // startTestClientWithStderr creates a client with piped stdin/stdout and a
 // syncBuffer for stderr, then runs it in a goroutine. Unlike startTestClient,
 // this allows reading stderr while the client is still running.
-func startTestClientWithStderr(t *testing.T, port int, passkey []byte) (
+func startTestClientWithStderr(t *testing.T, mode transport.DialMode, port int, passkey []byte, profile bool) (
 	stdinW *io.PipeWriter,
 	stdoutR *io.PipeReader,
 	stderrBuf *syncBuffer,
@@ -528,9 +563,11 @@ func startTestClientWithStderr(t *testing.T, port int, passkey []byte) (
 	stderr := &syncBuffer{}
 
 	cfg := Config{
-		Host:    "127.0.0.1",
-		Port:    port,
-		Passkey: passkey,
+		Host:     "127.0.0.1",
+		Port:     port,
+		Passkey:  passkey,
+		DialMode: mode,
+		Profile:  profile,
 	}
 
 	c := newTestClient(cfg, stdinR, stdoutW, stderr)
@@ -613,7 +650,7 @@ func TestClientAutoReconnect(t *testing.T) {
 	port, passkey, sessionCleanup := startTestSession(t)
 	defer sessionCleanup()
 
-	stdinW, stdoutR, stderrBuf, errCh, cancel := startTestClientWithStderr(t, port, passkey)
+	stdinW, stdoutR, stderrBuf, errCh, cancel := startTestClientWithStderr(t, transport.DialQUIC, port, passkey, false)
 	defer cancel()
 	defer stdinW.Close()
 	defer stdoutR.Close()

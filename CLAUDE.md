@@ -15,7 +15,8 @@ Not in PATH by default — use full path or add to shell config.
 /usr/local/go/bin/go test -race ./...      # race detector
 ./tests/integration_test.sh                # client↔session E2E (builds binary, uses FIFOs)
 ./tests/e2e_ssh_test.sh                    # SSH E2E (requires SSH key auth to localhost)
-/usr/local/go/bin/go test -v -run TestLoad -timeout 120s ./internal/session/  # load/integrity (QUIC + TCP)
+/usr/local/go/bin/go test -v -run TestLoad -timeout 120s ./internal/client/  # load/integrity (QUIC + TCP)
+# Override load shapes: -load.downstream=500000 -load.upstream=10000 -load.rapid=5000 -load.bidir=1000
 
 # Fuzz tests (use ^ and $ for exact match when names share prefix)
 # Crash-finding (no-panic on malformed input)

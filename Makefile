@@ -4,7 +4,7 @@ COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 LDFLAGS := -X github.com/chronologos/goet/internal/version.VERSION=$(VERSION) -X github.com/chronologos/goet/internal/version.Commit=$(COMMIT)
 FUZZTIME ?= 30s
 
-.PHONY: build install test test-race test-e2e fuzz lint clean
+.PHONY: build install test test-race test-e2e test-load fuzz lint clean
 
 build:
 	$(GO) build -ldflags "$(LDFLAGS)" -o goet ./cmd/goet
@@ -21,6 +21,9 @@ test-race:
 
 test-e2e: build
 	./tests/integration_test.sh
+
+test-load:
+	$(GO) test -v -run TestLoad -timeout 120s ./internal/client/
 
 lint:
 	$(GO) vet ./...

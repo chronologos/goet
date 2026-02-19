@@ -3,7 +3,8 @@
     "allow": [
       "Bash(/usr/local/go/bin/go build:*)",
       "Bash(/usr/local/go/bin/go test:*)",
-      "Bash(ssh:*)"
+      "Bash(ssh:*)",
+      "Bash(/usr/local/go/bin/go vet:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
