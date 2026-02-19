@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,24 +19,73 @@ import (
 	"github.com/chronologos/goet/internal/version"
 )
 
+// globalFlags holds double-dash flags parsed from os.Args before dispatch.
+// rest contains the remaining arguments with global flags stripped.
+type globalFlags struct {
+	version    bool
+	local      bool
+	install    bool
+	tcp        bool
+	profile    bool
+	replaySize int
+	rest       []string
+}
+
+func (g globalFlags) dialMode() transport.DialMode {
+	if g.tcp {
+		return transport.DialTCP
+	}
+	return transport.DialQUIC
+}
+
+// parseGlobalFlags extracts double-dash flags from os.Args and returns
+// the parsed values plus remaining args. Supports --flag and --flag=value forms.
+func parseGlobalFlags() globalFlags {
+	var g globalFlags
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		switch {
+		case arg == "--version":
+			g.version = true
+		case arg == "--local":
+			g.local = true
+		case arg == "--install":
+			g.install = true
+		case arg == "--tcp":
+			g.tcp = true
+		case arg == "--profile":
+			g.profile = true
+		case arg == "--replay-size" && i+1 < len(os.Args):
+			i++
+			g.replaySize, _ = strconv.Atoi(os.Args[i])
+		case strings.HasPrefix(arg, "--replay-size="):
+			v, _ := strings.CutPrefix(arg, "--replay-size=")
+			g.replaySize, _ = strconv.Atoi(v)
+		default:
+			g.rest = append(g.rest, arg)
+		}
+	}
+	return g
+}
+
 func main() {
-	// Early flags that don't need dispatch.
-	if hasFlag("--version") || (len(os.Args) > 1 && os.Args[1] == "version") {
+	gf := parseGlobalFlags()
+
+	if gf.version || (len(gf.rest) > 0 && gf.rest[0] == "version") {
 		fmt.Printf("goet %s (%s)\n", version.VERSION, version.Commit)
 		os.Exit(0)
 	}
 
-	// Dispatch based on argv[0] (symlink name) or subcommand.
 	base := filepath.Base(os.Args[0])
 
 	switch {
-	case base == "goet-session" || (len(os.Args) > 1 && os.Args[1] == "session"):
-		runSession()
-	case hasFlag("--local"):
-		runClient()
+	case base == "goet-session" || (len(gf.rest) > 0 && gf.rest[0] == "session"):
+		runSession(gf.rest)
+	case gf.local:
+		runClient(gf)
 	default:
-		if dest := findDestination(); dest != "" {
-			runSSHClient(dest)
+		if dest := findDestination(gf.rest); dest != "" {
+			runSSHClient(dest, gf)
 		} else {
 			fmt.Fprintln(os.Stderr, "usage: goet [--install] [--tcp] [user@]host")
 			fmt.Fprintln(os.Stderr, "       goet --local -p <port> -k <passkey-hex> [host]")
@@ -55,15 +103,10 @@ func main() {
 	}
 }
 
-// hasFlag checks if a flag is present in os.Args.
-func hasFlag(name string) bool {
-	return slices.Contains(os.Args[1:], name)
-}
-
 // findDestination returns the first non-flag argument (hostname or user@host),
-// or "" if none found.
-func findDestination() string {
-	for _, arg := range os.Args[1:] {
+// or "" if none found. args should have global flags already stripped.
+func findDestination(args []string) string {
+	for _, arg := range args {
 		if !strings.HasPrefix(arg, "-") {
 			return arg
 		}
@@ -71,40 +114,8 @@ func findDestination() string {
 	return ""
 }
 
-// dialMode returns the transport mode based on CLI flags.
-func dialMode() transport.DialMode {
-	if hasFlag("--tcp") {
-		return transport.DialTCP
-	}
-	return transport.DialQUIC
-}
-
-// replaySize returns the --replay-size value from CLI flags, or 0 for default.
-// Supports both --replay-size <N> and --replay-size=<N> forms.
-func replaySize() int {
-	for i := 1; i < len(os.Args); i++ {
-		arg := os.Args[i]
-		if arg == "--replay-size" && i+1 < len(os.Args) {
-			if n, err := strconv.Atoi(os.Args[i+1]); err == nil {
-				return n
-			}
-		}
-		if v, ok := strings.CutPrefix(arg, "--replay-size="); ok {
-			if n, err := strconv.Atoi(v); err == nil {
-				return n
-			}
-		}
-	}
-	return 0
-}
-
-func runSSHClient(destination string) {
-	profile := hasFlag("--profile")
-	install := hasFlag("--install")
-	mode := dialMode()
-	replay := replaySize()
-
-	res, err := client.SpawnSSH(destination, install, replay)
+func runSSHClient(destination string, gf globalFlags) {
+	res, err := client.SpawnSSH(destination, gf.install, gf.replaySize)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ssh: %v\n", err)
 		os.Exit(1)
@@ -116,37 +127,17 @@ func runSSHClient(destination string) {
 		Host:       res.Host,
 		Port:       res.Port,
 		Passkey:    res.Passkey,
-		Profile:    profile,
-		DialMode:   mode,
-		ReplaySize: replay,
+		Profile:    gf.profile,
+		DialMode:   gf.dialMode(),
+		ReplaySize: gf.replaySize,
 	})
 }
 
-func runClient() {
-	profile := hasFlag("--profile")
-	mode := dialMode()
-	replay := replaySize()
-
+func runClient(gf globalFlags) {
 	fs := flag.NewFlagSet("client", flag.ExitOnError)
 	port := fs.Int("p", 0, "port to connect to (required)")
 	passkeyHex := fs.String("k", "", "hex-encoded passkey (required)")
-
-	// Strip double-dash flags before parsing (flag package only supports single-dash).
-	var args []string
-	for i := 1; i < len(os.Args); i++ {
-		arg := os.Args[i]
-		switch {
-		case arg == "--local", arg == "--profile", arg == "--install", arg == "--tcp":
-			continue
-		case arg == "--replay-size" && i+1 < len(os.Args):
-			i++ // skip value
-			continue
-		case strings.HasPrefix(arg, "--replay-size="):
-			continue
-		}
-		args = append(args, arg)
-	}
-	fs.Parse(args)
+	fs.Parse(gf.rest)
 
 	if *port == 0 {
 		fmt.Fprintln(os.Stderr, "error: -p <port> is required")
@@ -174,9 +165,9 @@ func runClient() {
 		Host:       host,
 		Port:       *port,
 		Passkey:    passkey,
-		Profile:    profile,
-		DialMode:   mode,
-		ReplaySize: replay,
+		Profile:    gf.profile,
+		DialMode:   gf.dialMode(),
+		ReplaySize: gf.replaySize,
 	})
 }
 
@@ -193,14 +184,13 @@ func runClientWithConfig(cfg client.Config) {
 	}
 }
 
-func runSession() {
+func runSession(args []string) {
 	fs := flag.NewFlagSet("session", flag.ExitOnError)
 	sessionID := fs.String("f", "", "session ID (required, foreground mode)")
 	port := fs.Int("p", 0, "port to listen on (0 = random)")
 	replay := fs.Int("replay-size", 0, "catchup buffer size in bytes (0 = default 4KB)")
 
 	// Skip "session" subcommand if present
-	args := os.Args[1:]
 	if len(args) > 0 && args[0] == "session" {
 		args = args[1:]
 	}
