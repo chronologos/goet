@@ -66,26 +66,28 @@ func SpawnSSH(destination string, install bool, replaySize int) (*SSHResult, err
 func spawnWithInstall(user, host, destination string, replaySize int) (*SSHResult, error) {
 	remoteVer, err := getRemoteVersion(user, host)
 
-	needsInstall := false
 	goetPath := "goet"
+	upgrading := false
 
 	if err != nil {
 		slog.Info("goet not found on remote, installing...", "host", host)
-		needsInstall = true
 	} else if remoteVer != version.Commit {
 		slog.Info("upgrading goet on remote", "host", host, "remote", remoteVer, "local", version.Commit)
-		needsInstall = true
+		upgrading = true
 	} else {
 		slog.Info("remote goet is up to date", "host", host, "version", remoteVer)
+		return spawnSSH(user, host, goetPath, replaySize)
 	}
 
-	if needsInstall {
-		if err := installRemote(user, host); err != nil {
-			return nil, fmt.Errorf("install goet on remote: %w", err)
-		}
-		goetPath = remoteGoetPath
-		fmt.Fprintf(os.Stderr, "note: goet was installed to %s on %s\n", remoteGoetPath, host)
-		fmt.Fprintf(os.Stderr, "      add ~/.local/bin to PATH for bare 'goet' invocations\n")
+	if err := installRemote(user, host); err != nil {
+		return nil, fmt.Errorf("install goet on remote: %w", err)
+	}
+	goetPath = remoteGoetPath
+	if upgrading {
+		fmt.Fprintf(os.Stderr, "upgraded goet on %s\n", host)
+	} else {
+		fmt.Fprintf(os.Stderr, "installed goet to %s on %s\n", remoteGoetPath, host)
+		fmt.Fprintf(os.Stderr, "  add ~/.local/bin to PATH for bare 'goet' invocations\n")
 	}
 
 	res, err := spawnSSH(user, host, goetPath, replaySize)
