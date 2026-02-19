@@ -121,11 +121,22 @@ func (c *Client) Run(ctx context.Context) error {
 	stdinCh := make(chan []byte, 4)
 	go c.readStdin(stdinCh)
 
+	var dialHinted bool
+
 	for {
 		conn, err := c.dial(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			// On first connect failure, tell the user what's happening.
+			// Reconnect failures already show "Connection lost. Reconnecting..."
+			if c.profileStart.IsZero() && !dialHinted {
+				dialHinted = true
+				fmt.Fprintf(c.stderr, "connect failed, retrying: %v\r\n", err)
+				if c.cfg.DialMode != transport.DialTCP {
+					fmt.Fprintf(c.stderr, "  hint: if UDP is blocked, try --tcp\r\n")
+				}
 			}
 			c.log.Warn("connect failed, retrying", "err", err, "delay", reconnectDelay)
 			select {
