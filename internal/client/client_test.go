@@ -604,20 +604,6 @@ func waitForStderr(t *testing.T, buf *syncBuffer, substr string, timeout time.Du
 	}
 }
 
-// countOccurrences returns how many times substr appears in s.
-func countOccurrences(s, substr string) int {
-	count := 0
-	for i := 0; ; {
-		j := strings.Index(s[i:], substr)
-		if j < 0 {
-			break
-		}
-		count++
-		i += j + len(substr)
-	}
-	return count
-}
-
 // TestClientAutoReconnect verifies that the client's Run() loop survives
 // network disconnects and automatically reconnects. It uses "client
 // displacement" — dialing a raw connection causes the session to close the
@@ -683,10 +669,10 @@ func TestClientAutoReconnect(t *testing.T) {
 
 	// Verify stderr has the expected number of disconnect/reconnect messages
 	stderr := stderrBuf.String()
-	if n := countOccurrences(stderr, "Connection lost"); n != 2 {
+	if n := strings.Count(stderr, "Connection lost"); n != 2 {
 		t.Errorf("expected 2x 'Connection lost' in stderr, got %d:\n%s", n, stderr)
 	}
-	if n := countOccurrences(stderr, "Reconnected."); n != 2 {
+	if n := strings.Count(stderr, "Reconnected."); n != 2 {
 		t.Errorf("expected 2x 'Reconnected.' in stderr, got %d:\n%s", n, stderr)
 	}
 

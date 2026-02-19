@@ -213,13 +213,19 @@ func (s *Session) Run(ctx context.Context) (retErr error) {
 
 // readPTY continuously reads from the PTY master and sends chunks to ptyDataCh.
 // Exits when PTY is closed (shell exit or cleanup).
+//
+// A single 32KB buffer is reused for Read() calls. Each read copies only
+// the actual n bytes into a right-sized slice for the channel, avoiding
+// a 32KB allocation per read.
 func (s *Session) readPTY(ch chan<- []byte) {
 	defer close(ch)
+	buf := make([]byte, ptyReadBufSize)
 	for {
-		buf := make([]byte, ptyReadBufSize)
 		n, err := s.ptmx.Read(buf)
 		if n > 0 {
-			ch <- buf[:n]
+			out := make([]byte, n)
+			copy(out, buf[:n])
+			ch <- out
 		}
 		if err != nil {
 			return

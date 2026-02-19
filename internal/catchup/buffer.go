@@ -94,7 +94,7 @@ func (b *Buffer) ReplaySince(afterSeq uint64) []Entry {
 		return nil
 	}
 
-	var result []Entry
+	result := make([]Entry, 0, b.count)
 	t := b.tail()
 
 	for i := 0; i < b.count; i++ {
@@ -105,6 +105,9 @@ func (b *Buffer) ReplaySince(afterSeq uint64) []Entry {
 		}
 	}
 
+	if len(result) == 0 {
+		return nil
+	}
 	return result
 }
 

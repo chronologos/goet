@@ -426,13 +426,19 @@ func (c *Client) ioLoop(ctx context.Context, conn transport.Conn, stdinCh <-chan
 
 // readStdin reads from stdin in a loop, sending chunks to ch.
 // This goroutine is permanent — it survives reconnections.
+//
+// A single 32KB buffer is reused for Read() calls. Each read copies only
+// the actual n bytes into a right-sized slice for the channel, avoiding
+// a 32KB allocation per read.
 func (c *Client) readStdin(ch chan<- []byte) {
 	defer close(ch)
+	buf := make([]byte, stdinBufSize)
 	for {
-		buf := make([]byte, stdinBufSize)
 		n, err := c.stdin.Read(buf)
 		if n > 0 {
-			ch <- buf[:n]
+			out := make([]byte, n)
+			copy(out, buf[:n])
+			ch <- out
 		}
 		if err != nil {
 			return

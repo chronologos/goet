@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -426,6 +427,84 @@ func FuzzRoundTripTerminalInfo(f *testing.F) {
 			t.Fatalf("term mismatch: got %q, want %q", decoded.Term, original.Term)
 		}
 	})
+}
+
+// --- Benchmarks ---
+
+func BenchmarkWriteData(b *testing.B) {
+	for _, size := range []int{1, 128, 32 * 1024, 256 * 1024} {
+		b.Run(fmt.Sprintf("payload=%d", size), func(b *testing.B) {
+			msg := &Data{Seq: 1, Payload: make([]byte, size)}
+			var buf bytes.Buffer
+			buf.Grow(size + HeaderSize + DataHeaderSize)
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				buf.Reset()
+				WriteMessage(&buf, msg)
+			}
+		})
+	}
+}
+
+func BenchmarkReadData(b *testing.B) {
+	for _, size := range []int{1, 128, 32 * 1024, 256 * 1024} {
+		b.Run(fmt.Sprintf("payload=%d", size), func(b *testing.B) {
+			msg := &Data{Seq: 1, Payload: make([]byte, size)}
+			var encoded bytes.Buffer
+			WriteMessage(&encoded, msg)
+			wire := encoded.Bytes()
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ReadMessage(bytes.NewReader(wire))
+			}
+		})
+	}
+}
+
+func BenchmarkWriteHeartbeat(b *testing.B) {
+	msg := &Heartbeat{TimestampMs: 1706745600000}
+	var buf bytes.Buffer
+	buf.Grow(HeaderSize + HeartbeatSize)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		WriteMessage(&buf, msg)
+	}
+}
+
+func BenchmarkReadHeartbeat(b *testing.B) {
+	msg := &Heartbeat{TimestampMs: 1706745600000}
+	var encoded bytes.Buffer
+	WriteMessage(&encoded, msg)
+	wire := encoded.Bytes()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ReadMessage(bytes.NewReader(wire))
+	}
+}
+
+func BenchmarkRoundTripData(b *testing.B) {
+	for _, size := range []int{1, 128, 32 * 1024} {
+		b.Run(fmt.Sprintf("payload=%d", size), func(b *testing.B) {
+			msg := &Data{Seq: 1, Payload: make([]byte, size)}
+			var buf bytes.Buffer
+			buf.Grow(size + HeaderSize + DataHeaderSize)
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				buf.Reset()
+				WriteMessage(&buf, msg)
+				ReadMessage(&buf)
+			}
+		})
+	}
 }
 
 func FuzzRoundTripAuthRequest(f *testing.F) {

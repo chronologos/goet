@@ -238,6 +238,51 @@ func TestPartialCatchupReplayAfterEviction(t *testing.T) {
 		len(entries), totalEntries, entries[0].Seq, entries[len(entries)-1].Seq)
 }
 
+// --- Benchmarks ---
+
+func BenchmarkStore(b *testing.B) {
+	for _, size := range []int{128, 4096, 32 * 1024} {
+		b.Run(fmt.Sprintf("payload=%d", size), func(b *testing.B) {
+			buf := New(1 << 20) // 1MB buffer
+			payload := make([]byte, size)
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				buf.Store(uint64(i+1), payload)
+			}
+		})
+	}
+}
+
+func BenchmarkStoreWithEviction(b *testing.B) {
+	// 4KB buffer with 32KB payloads — forces eviction every store
+	buf := New(4096)
+	payload := make([]byte, 32*1024)
+	b.ReportAllocs()
+	b.SetBytes(32 * 1024)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Store(uint64(i+1), payload)
+	}
+}
+
+func BenchmarkReplaySince(b *testing.B) {
+	for _, count := range []int{4, 100, 1000} {
+		b.Run(fmt.Sprintf("entries=%d", count), func(b *testing.B) {
+			buf := New(count * 1024) // enough room for all entries
+			for i := 1; i <= count; i++ {
+				buf.Store(uint64(i), make([]byte, 512))
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				buf.ReplaySince(0)
+			}
+		})
+	}
+}
+
 // --- Fuzz tests ---
 
 // FuzzBufferStoreReplay exercises Store/ReplaySince with arbitrary data,

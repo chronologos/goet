@@ -1,6 +1,7 @@
 package coalesce
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -160,6 +161,56 @@ func TestTimerNilWhenEmpty(t *testing.T) {
 
 	if c.Timer() != nil {
 		t.Fatal("timer should be nil when no data buffered")
+	}
+}
+
+// --- Benchmarks ---
+
+func BenchmarkAddFlush(b *testing.B) {
+	for _, size := range []int{1, 128, 32 * 1024} {
+		b.Run(fmt.Sprintf("chunk=%d", size), func(b *testing.B) {
+			c := New()
+			defer c.Stop()
+			chunk := make([]byte, size)
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				c.Add(chunk)
+				c.Flush()
+			}
+		})
+	}
+}
+
+func BenchmarkAddOnly(b *testing.B) {
+	c := New()
+	defer c.Stop()
+	chunk := make([]byte, 128)
+	b.ReportAllocs()
+	b.SetBytes(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.Add(chunk)
+		if len(c.buf) >= Threshold {
+			c.Flush()
+		}
+	}
+}
+
+func BenchmarkCoalesceTypical(b *testing.B) {
+	// Simulates the typical session path: many small PTY reads
+	// coalesced into 32KB batches
+	c := New()
+	defer c.Stop()
+	chunk := make([]byte, 4096) // typical PTY read
+	b.ReportAllocs()
+	b.SetBytes(4096)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if c.Add(chunk) {
+			c.Flush()
+		}
 	}
 }
 
