@@ -2,7 +2,7 @@ package catchup
 
 import "sync"
 
-const DefaultBufferSize = 64 * 1024 * 1024 // 64 MB
+const DefaultBufferSize = 4 * 1024 // 4 KB
 
 // entry stores a single Data message's payload with its sequence number.
 type entry struct {

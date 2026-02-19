@@ -36,11 +36,12 @@ const (
 
 // Config holds client configuration.
 type Config struct {
-	Host     string
-	Port     int
-	Passkey  []byte
-	Profile  bool               // emit RTT/traffic stats to stderr
-	DialMode transport.DialMode // QUIC (default) or TCP
+	Host       string
+	Port       int
+	Passkey    []byte
+	Profile    bool               // emit RTT/traffic stats to stderr
+	DialMode   transport.DialMode // QUIC (default) or TCP
+	ReplaySize int                // catchup buffer size in bytes (0 = default 4KB)
 }
 
 // Client is the terminal-facing half of a reconnectable terminal session.
@@ -77,7 +78,7 @@ func New(cfg Config) *Client {
 	return &Client{
 		cfg:     cfg,
 		log:     logger,
-		buf:     catchup.New(0),
+		buf:     catchup.New(cfg.ReplaySize),
 		escape:  NewEscapeProcessor(),
 		stdin:   os.Stdin,
 		stdout:  os.Stdout,
@@ -92,7 +93,7 @@ func newTestClient(cfg Config, stdin io.Reader, stdout, stderr io.Writer) *Clien
 	return &Client{
 		cfg:     cfg,
 		log:     slog.New(&discardHandler{}),
-		buf:     catchup.New(0),
+		buf:     catchup.New(cfg.ReplaySize),
 		escape:  NewEscapeProcessor(),
 		stdin:   stdin,
 		stdout:  stdout,

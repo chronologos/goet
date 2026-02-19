@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chronologos/goet/internal/catchup"
+
 	"github.com/chronologos/goet/internal/auth"
 	"github.com/chronologos/goet/internal/version"
 )
@@ -43,15 +45,16 @@ func sshArgs(user, host string) []string {
 //
 // If install is true, it checks the remote version first. If goet is missing
 // or outdated (commit mismatch), it installs/upgrades before spawning.
-func SpawnSSH(destination string, install bool) (*SSHResult, error) {
+// replaySize is passed to the remote session (0 = use remote's default).
+func SpawnSSH(destination string, install bool, replaySize int) (*SSHResult, error) {
 	user, host := parseDestination(destination)
 
 	if install {
-		return spawnWithInstall(user, host, destination)
+		return spawnWithInstall(user, host, destination, replaySize)
 	}
 
 	// No --install: try goet in PATH, suggest --install on failure
-	res, err := spawnSSH(user, host, "goet")
+	res, err := spawnSSH(user, host, "goet", replaySize)
 	if err != nil && isNotInstalledError(err) {
 		return nil, fmt.Errorf("goet is not installed on %s\n  Run: goet --install %s", host, destination)
 	}
@@ -60,7 +63,7 @@ func SpawnSSH(destination string, install bool) (*SSHResult, error) {
 
 // spawnWithInstall checks the remote goet version and installs/upgrades if
 // needed before spawning the session.
-func spawnWithInstall(user, host, destination string) (*SSHResult, error) {
+func spawnWithInstall(user, host, destination string, replaySize int) (*SSHResult, error) {
 	remoteVer, err := getRemoteVersion(user, host)
 
 	needsInstall := false
@@ -85,7 +88,7 @@ func spawnWithInstall(user, host, destination string) (*SSHResult, error) {
 		fmt.Fprintf(os.Stderr, "      add ~/.local/bin to PATH for bare 'goet' invocations\n")
 	}
 
-	res, err := spawnSSH(user, host, goetPath)
+	res, err := spawnSSH(user, host, goetPath, replaySize)
 	if err != nil {
 		return nil, fmt.Errorf("connect after install: %w", err)
 	}
@@ -94,7 +97,7 @@ func spawnWithInstall(user, host, destination string) (*SSHResult, error) {
 
 // spawnSSH launches an SSH process to start a goet session on the remote host
 // using the specified goet binary path.
-func spawnSSH(user, host, goetPath string) (*SSHResult, error) {
+func spawnSSH(user, host, goetPath string, replaySize int) (*SSHResult, error) {
 	passkey, err := auth.GeneratePasskey()
 	if err != nil {
 		return nil, fmt.Errorf("generate passkey: %w", err)
@@ -105,6 +108,9 @@ func spawnSSH(user, host, goetPath string) (*SSHResult, error) {
 
 	// No -t flag — PTY would corrupt the passkey/port protocol on stdin/stdout.
 	args := append(sshArgs(user, host), goetPath, "session", "-f", sessionID, "-p", "0")
+	if replaySize > 0 && replaySize != catchup.DefaultBufferSize {
+		args = append(args, "-replay-size", strconv.Itoa(replaySize))
+	}
 
 	cmd := exec.Command("ssh", args...)
 	cmd.Stderr = os.Stderr // SSH errors (host key, auth failures) visible to user

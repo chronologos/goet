@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -438,5 +439,262 @@ func TestProfileOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "[profile] Traffic:") {
 		t.Errorf("missing traffic line in stderr:\n%s", output)
+	}
+}
+
+// syncBuffer is a thread-safe bytes.Buffer for capturing stderr concurrently.
+// The writer (client goroutine) and reader (test goroutine) can operate safely.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// pipeAccumulator reads from a PipeReader in a single goroutine, accumulating
+// all data. waitFor polls the accumulated buffer for a substring, avoiding the
+// race condition of multiple readUntilFromPipe goroutines competing for bytes.
+type pipeAccumulator struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func newPipeAccumulator(r *io.PipeReader) *pipeAccumulator {
+	a := &pipeAccumulator{}
+	go func() {
+		tmp := make([]byte, 4096)
+		for {
+			n, err := r.Read(tmp)
+			if n > 0 {
+				a.mu.Lock()
+				a.buf.Write(tmp[:n])
+				a.mu.Unlock()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return a
+}
+
+func (a *pipeAccumulator) waitFor(t *testing.T, substr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-deadline:
+			a.mu.Lock()
+			got := a.buf.String()
+			a.mu.Unlock()
+			t.Fatalf("timeout waiting for %q in stdout (got: %q)", substr, got)
+		case <-tick.C:
+			a.mu.Lock()
+			found := strings.Contains(a.buf.String(), substr)
+			a.mu.Unlock()
+			if found {
+				return
+			}
+		}
+	}
+}
+
+// startTestClientWithStderr creates a client with piped stdin/stdout and a
+// syncBuffer for stderr, then runs it in a goroutine. Unlike startTestClient,
+// this allows reading stderr while the client is still running.
+func startTestClientWithStderr(t *testing.T, port int, passkey []byte) (
+	stdinW *io.PipeWriter,
+	stdoutR *io.PipeReader,
+	stderrBuf *syncBuffer,
+	errCh <-chan error,
+	cancel func(),
+) {
+	t.Helper()
+
+	stdinR, stdinWriter := io.Pipe()
+	stdoutReader, stdoutW := io.Pipe()
+	stderr := &syncBuffer{}
+
+	cfg := Config{
+		Host:    "127.0.0.1",
+		Port:    port,
+		Passkey: passkey,
+	}
+
+	c := newTestClient(cfg, stdinR, stdoutW, stderr)
+	ctx, cancelFn := context.WithCancel(context.Background())
+
+	ch := make(chan error, 1)
+	go func() {
+		err := c.Run(ctx)
+		stdoutW.Close()
+		ch <- err
+	}()
+
+	return stdinWriter, stdoutReader, stderr, ch, cancelFn
+}
+
+// displaceClient dials a raw QUIC connection to the session, completing the
+// full handshake (read SequenceHeader, send TerminalInfo). This causes the
+// session's handleNewConn to close the real client's connection, simulating
+// a network disconnect. After the handshake completes, it waits briefly for
+// the session to process, then closes the raw connection.
+func displaceClient(t *testing.T, port int, passkey []byte) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := transport.Dial(ctx, transport.DialQUIC, "127.0.0.1", port, passkey, 0)
+	if err != nil {
+		t.Fatalf("displaceClient: dial failed: %v", err)
+	}
+
+	// Read SequenceHeader from session
+	msg, err := conn.ReadControl()
+	if err != nil {
+		conn.Close()
+		t.Fatalf("displaceClient: read control: %v", err)
+	}
+	if _, ok := msg.(*protocol.SequenceHeader); !ok {
+		conn.Close()
+		t.Fatalf("displaceClient: expected SequenceHeader, got %T", msg)
+	}
+
+	// Send TerminalInfo to complete handshake
+	if err := conn.WriteControl(&protocol.TerminalInfo{Term: "xterm-256color"}); err != nil {
+		conn.Close()
+		t.Fatalf("displaceClient: write terminal info: %v", err)
+	}
+
+	// Wait for session to fully process the new connection
+	time.Sleep(200 * time.Millisecond)
+
+	// Close raw connection — session goes back to waiting for a new client
+	conn.Close()
+}
+
+// waitForStderr polls a syncBuffer until it contains substr or timeout expires.
+func waitForStderr(t *testing.T, buf *syncBuffer, substr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for %q in stderr (got: %q)", substr, buf.String())
+		case <-tick.C:
+			if strings.Contains(buf.String(), substr) {
+				return
+			}
+		}
+	}
+}
+
+// countOccurrences returns how many times substr appears in s.
+func countOccurrences(s, substr string) int {
+	count := 0
+	for i := 0; ; {
+		j := strings.Index(s[i:], substr)
+		if j < 0 {
+			break
+		}
+		count++
+		i += j + len(substr)
+	}
+	return count
+}
+
+// TestClientAutoReconnect verifies that the client's Run() loop survives
+// network disconnects and automatically reconnects. It uses "client
+// displacement" — dialing a raw connection causes the session to close the
+// real client's connection — to simulate network failures without OS-level
+// packet manipulation. Two disconnect/reconnect cycles are tested.
+func TestClientAutoReconnect(t *testing.T) {
+	port, passkey, sessionCleanup := startTestSession(t)
+	defer sessionCleanup()
+
+	stdinW, stdoutR, stderrBuf, errCh, cancel := startTestClientWithStderr(t, port, passkey)
+	defer cancel()
+	defer stdinW.Close()
+	defer stdoutR.Close()
+
+	stdout := newPipeAccumulator(stdoutR)
+
+	// Phase 1: Baseline — verify the client is connected and functional
+	time.Sleep(500 * time.Millisecond)
+
+	marker1 := "BASELINE_1_" + time.Now().Format("150405")
+	if _, err := stdinW.Write([]byte("echo " + marker1 + "\n")); err != nil {
+		t.Fatalf("write baseline cmd: %v", err)
+	}
+	stdout.waitFor(t, marker1, 5*time.Second)
+
+	// Schedule output that will fire during the disconnect window
+	if _, err := stdinW.Write([]byte("sleep 2 && echo DURING_DISCONNECT_1\n")); err != nil {
+		t.Fatalf("write sleep cmd: %v", err)
+	}
+
+	// Phase 2: First disconnect + reconnect
+	time.Sleep(200 * time.Millisecond) // let the sleep command start
+	displaceClient(t, port, passkey)
+
+	waitForStderr(t, stderrBuf, "Connection lost", 5*time.Second)
+
+	// The sleep command's output should arrive via catchup replay or live after reconnect
+	stdout.waitFor(t, "DURING_DISCONNECT_1", 10*time.Second)
+
+	waitForStderr(t, stderrBuf, "Reconnected.", 10*time.Second)
+
+	// Verify post-reconnect I/O works
+	marker2 := "AFTER_RECONNECT_1_" + time.Now().Format("150405")
+	if _, err := stdinW.Write([]byte("echo " + marker2 + "\n")); err != nil {
+		t.Fatalf("write after reconnect cmd: %v", err)
+	}
+	stdout.waitFor(t, marker2, 5*time.Second)
+
+	// Phase 3: Second disconnect + reconnect
+	if _, err := stdinW.Write([]byte("sleep 2 && echo DURING_DISCONNECT_2\n")); err != nil {
+		t.Fatalf("write second sleep cmd: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	displaceClient(t, port, passkey)
+
+	stdout.waitFor(t, "DURING_DISCONNECT_2", 10*time.Second)
+
+	marker3 := "AFTER_RECONNECT_2_" + time.Now().Format("150405")
+	if _, err := stdinW.Write([]byte("echo " + marker3 + "\n")); err != nil {
+		t.Fatalf("write second after reconnect cmd: %v", err)
+	}
+	stdout.waitFor(t, marker3, 5*time.Second)
+
+	// Verify stderr has the expected number of disconnect/reconnect messages
+	stderr := stderrBuf.String()
+	if n := countOccurrences(stderr, "Connection lost"); n != 2 {
+		t.Errorf("expected 2x 'Connection lost' in stderr, got %d:\n%s", n, stderr)
+	}
+	if n := countOccurrences(stderr, "Reconnected."); n != 2 {
+		t.Errorf("expected 2x 'Reconnected.' in stderr, got %d:\n%s", n, stderr)
+	}
+
+	// Phase 4: Clean exit
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for client to exit")
 	}
 }

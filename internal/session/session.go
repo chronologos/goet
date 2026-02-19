@@ -25,10 +25,11 @@ const (
 
 // Config holds session configuration.
 type Config struct {
-	SessionID string
-	Port      int
-	Passkey   []byte
-	LogWriter io.Writer // if set, logs here instead of stderr
+	SessionID  string
+	Port       int
+	Passkey    []byte
+	LogWriter  io.Writer // if set, logs here instead of stderr
+	ReplaySize int       // catchup buffer size in bytes (0 = default 4KB)
 }
 
 // streamEvent is a tagged message from a connection's stream reader goroutine.
@@ -77,7 +78,7 @@ func New(cfg Config) *Session {
 	return &Session{
 		cfg:   cfg,
 		log:   slog.New(slog.NewTextHandler(logWriter, nil)).With("component", "session", "sid", cfg.SessionID),
-		buf:   catchup.New(0), // default 64 MB
+		buf:   catchup.New(cfg.ReplaySize),
 		Ready: make(chan struct{}),
 	}
 }

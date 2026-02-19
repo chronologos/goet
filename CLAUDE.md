@@ -68,7 +68,7 @@ echo "$PASSKEY" | ./goet session -f test -p 0
 - **Two-process model**: client + session (no broker)
 - **Two QUIC streams**: control (stream 0) + data (stream 1)
 - **HMAC-SHA256 auth** bound to TLS exporter material
-- **64MB ring buffer** for reconnect catchup (both sides)
+- **4KB ring buffer** for reconnect catchup (both sides, configurable via `--replay-size`)
 - **Write coalescing** — 2ms deadline timer + 32KB threshold batches small writes into fewer Data messages (`internal/coalesce/`)
 - **`~.` escape** detection via 3-state machine in client
 - **SSH bootstrapping**: `goet user@host` spawns SSH to launch remote session, then QUIC for data
